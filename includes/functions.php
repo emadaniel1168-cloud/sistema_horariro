@@ -973,7 +973,12 @@ function resumen_clase_horario(int $idHorario): string
 }
 
 const APP_NAME = 'Colegio Santander';
-const APP_BASE = '/SI';
+$appScriptPath = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '/');
+$appBase = preg_replace('~/[^/]+$~', '', $appScriptPath) ?? '';
+if (str_ends_with($appBase, '/admin')) {
+    $appBase = substr($appBase, 0, -strlen('/admin'));
+}
+define('APP_BASE', $appBase);
 const LIMITE_PALABRAS_DESCRIPCION_BLOQUE = 12;
 const LIMITE_CARACTERES_DESCRIPCION_BLOQUE = 100;
 
