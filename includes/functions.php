@@ -1106,10 +1106,21 @@ function require_csrf(): void
     }
 }
 
-function asegurar_tabla_administrador(): void
+function asegurar_tabla_admin(): void
 {
+    $adminTableExists = db_one(
+        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admin'"
+    ) !== null;
+    $legacyTableExists = db_one(
+        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'administrador'"
+    ) !== null;
+
+    if (!$adminTableExists && $legacyTableExists) {
+        db_exec('RENAME TABLE administrador TO admin');
+    }
+
     db_exec(
-        'CREATE TABLE IF NOT EXISTS administrador (
+        'CREATE TABLE IF NOT EXISTS admin (
             id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             correo VARCHAR(254) NOT NULL UNIQUE,
             nombre VARCHAR(100) NOT NULL,
@@ -1117,9 +1128,9 @@ function asegurar_tabla_administrador(): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
     );
 
-    if (db_one('SELECT id FROM administrador LIMIT 1') === null) {
+    if (db_one('SELECT id FROM admin LIMIT 1') === null) {
         db_exec(
-            'INSERT INTO administrador (correo, nombre, contrasena) VALUES (?, ?, ?)',
+            'INSERT INTO admin (correo, nombre, contrasena) VALUES (?, ?, ?)',
             ['administrador1234@gmail.com', 'Administrador', password_hash('admin123', PASSWORD_DEFAULT)]
         );
     }
@@ -1127,10 +1138,10 @@ function asegurar_tabla_administrador(): void
 
 function require_admin_auth(): void
 {
-    asegurar_tabla_administrador();
+    asegurar_tabla_admin();
     $adminId = (int) ($_SESSION['admin_id'] ?? 0);
     $admin = $adminId > 0
-        ? db_one('SELECT id, correo, nombre FROM administrador WHERE id = ?', [$adminId])
+        ? db_one('SELECT id, correo, nombre FROM admin WHERE id = ?', [$adminId])
         : null;
 
     if ($admin === null) {

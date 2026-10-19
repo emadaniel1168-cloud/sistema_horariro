@@ -13,4 +13,4 @@ require_csrf();
 $_SESSION = [];
 session_regenerate_id(true);
 session_destroy();
-redirect(APP_BASE . '/admin/login.php');
+redirect(APP_BASE . '/admin/login.php?logout=1');

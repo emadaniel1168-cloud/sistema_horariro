@@ -8,7 +8,7 @@ require_admin_auth();
 
 $sectionTitle = 'Configuración de cuenta';
 $adminId = (int) $_SESSION['admin_id'];
-$admin = db_one('SELECT id, correo, nombre, contrasena FROM administrador WHERE id = ?', [$adminId]);
+$admin = db_one('SELECT id, correo, nombre, contrasena FROM admin WHERE id = ?', [$adminId]);
 if ($admin === null) {
     redirect(APP_BASE . '/admin/login.php');
 }
@@ -34,7 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!filter_var($correo, FILTER_VALIDATE_EMAIL) || strlen($correo) > 254) {
             throw new RuntimeException('Ingrese un correo electrónico válido.');
         }
-        if (db_one('SELECT id FROM administrador WHERE correo = ? AND id <> ?', [$correo, $adminId]) !== null) {
+        if (db_one('SELECT id FROM admin WHERE correo = ? AND id <> ?', [$correo, $adminId]) !== null) {
             throw new RuntimeException('Ese correo electrónico ya está en uso.');
         }
         if ($contrasenaNueva !== '') {
@@ -50,11 +50,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($contrasenaNueva !== '') {
             db_exec(
-                'UPDATE administrador SET nombre = ?, correo = ?, contrasena = ? WHERE id = ?',
+                'UPDATE admin SET nombre = ?, correo = ?, contrasena = ? WHERE id = ?',
                 [$nombre, $correo, password_hash($contrasenaNueva, PASSWORD_DEFAULT), $adminId]
             );
         } else {
-            db_exec('UPDATE administrador SET nombre = ?, correo = ? WHERE id = ?', [$nombre, $correo, $adminId]);
+            db_exec('UPDATE admin SET nombre = ?, correo = ? WHERE id = ?', [$nombre, $correo, $adminId]);
         }
 
         flash_set('success', 'Los datos de la cuenta se actualizaron correctamente.');

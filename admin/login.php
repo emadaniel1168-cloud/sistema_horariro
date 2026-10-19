@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 session_start();
 require_once dirname(__DIR__) . '/includes/functions.php';
-asegurar_tabla_administrador();
+asegurar_tabla_admin();
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+$clearLoginFields = isset($_GET['logout']);
 
 if (!empty($_SESSION['admin_id'])) {
-    $existingAdmin = db_one('SELECT id FROM administrador WHERE id = ?', [(int) $_SESSION['admin_id']]);
+    $existingAdmin = db_one('SELECT id FROM admin WHERE id = ?', [(int) $_SESSION['admin_id']]);
     if ($existingAdmin !== null) {
         redirect(APP_BASE . '/admin/index.php');
     }
@@ -23,7 +26,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $contrasenaInput = $_POST['contrasena'] ?? '';
         $correo = is_string($correoInput) ? strtolower(trim($correoInput)) : '';
         $contrasena = is_string($contrasenaInput) ? $contrasenaInput : '';
-        $admin = db_one('SELECT id, contrasena FROM administrador WHERE correo = ?', [$correo]);
+        $admin = db_one('SELECT id, contrasena FROM admin WHERE correo = ?', [$correo]);
 
         if ($admin !== null && password_verify($contrasena, $admin['contrasena'])) {
             session_regenerate_id(true);
@@ -57,16 +60,16 @@ $flash = flash_get();
     <?php if ($error !== ''): ?>
         <div class="alert alert-error" role="alert"><?= e($error) ?></div>
     <?php endif; ?>
-    <form method="post" action="<?= e(APP_BASE) ?>/admin/login.php" novalidate data-spanish-validation>
+    <form method="post" action="<?= e(APP_BASE) ?>/admin/login.php" autocomplete="<?= $clearLoginFields ? 'off' : 'on' ?>" novalidate data-spanish-validation>
         <?= csrf_field() ?>
         <div class="field">
             <label for="correo">Correo electrónico</label>
-            <input id="correo" name="correo" type="email" autocomplete="username" maxlength="254" required autofocus>
+            <input id="correo" name="correo" type="email" autocomplete="<?= $clearLoginFields ? 'off' : 'username' ?>" maxlength="254" required autofocus>
         </div>
         <div class="field">
             <label for="contrasena">Contraseña</label>
             <div class="password-input">
-                <input id="contrasena" name="contrasena" type="password" autocomplete="current-password" required>
+                <input id="contrasena" name="contrasena" type="password" autocomplete="<?= $clearLoginFields ? 'off' : 'current-password' ?>" required>
                 <button class="password-toggle" type="button" data-password-toggle aria-label="Mostrar contraseña" aria-pressed="false">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m4 4 16 16"/></svg>
                 </button>
@@ -76,5 +79,13 @@ $flash = flash_get();
     </form>
 </main>
 <script src="<?= e(APP_BASE) ?>/js/app.js?v=<?= (int) filemtime(dirname(__DIR__) . '/js/app.js') ?>-<?= (int) filesize(dirname(__DIR__) . '/js/app.js') ?>"></script>
+<?php if ($clearLoginFields): ?>
+<script>
+    window.addEventListener('pageshow', () => {
+        document.getElementById('correo').value = '';
+        document.getElementById('contrasena').value = '';
+    });
+</script>
+<?php endif; ?>
 </body>
 </html>
