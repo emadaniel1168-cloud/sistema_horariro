@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 session_start();
 require_once dirname(__DIR__) . '/includes/functions.php';
+require_admin_auth();
 
 $sectionTitle = 'Disponibilidad de profesores';
 $profesores = db_all('SELECT id_profesor, nombre_completo FROM profesores ORDER BY nombre_completo');

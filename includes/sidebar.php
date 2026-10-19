@@ -19,5 +19,15 @@ $navItems = [
             </a>
         <?php endforeach; ?>
     </nav>
+    <div class="sidebar-account">
+        <a class="<?= is_active('configuracion.php') ?>" href="<?= e(APP_BASE) ?>/admin/configuracion.php">
+            <span class="nav-icon" aria-hidden="true">⚙</span>
+            <span>Configuración de cuenta</span>
+        </a>
+        <form method="post" action="<?= e(APP_BASE) ?>/admin/logout.php">
+            <?= csrf_field() ?>
+            <button type="submit"><span class="nav-icon" aria-hidden="true">↪</span><span>Cerrar sesión</span></button>
+        </form>
+    </div>
 </aside>
 <div class="sidebar-backdrop" data-menu-toggle></div>

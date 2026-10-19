@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 session_start();
 require_once dirname(__DIR__) . '/includes/functions.php';
+require_admin_auth();
 
 $sectionTitle = 'Grados';
 $calendarios = db_all('SELECT id_calendario, nombre FROM calendarios WHERE id_calendario IN (1, 2) ORDER BY id_calendario');

@@ -1106,6 +1106,42 @@ function require_csrf(): void
     }
 }
 
+function asegurar_tabla_administrador(): void
+{
+    db_exec(
+        'CREATE TABLE IF NOT EXISTS administrador (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            correo VARCHAR(254) NOT NULL UNIQUE,
+            nombre VARCHAR(100) NOT NULL,
+            contrasena VARCHAR(255) NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+
+    if (db_one('SELECT id FROM administrador LIMIT 1') === null) {
+        db_exec(
+            'INSERT INTO administrador (correo, nombre, contrasena) VALUES (?, ?, ?)',
+            ['administrador1234@gmail.com', 'Administrador', password_hash('admin123', PASSWORD_DEFAULT)]
+        );
+    }
+}
+
+function require_admin_auth(): void
+{
+    asegurar_tabla_administrador();
+    $adminId = (int) ($_SESSION['admin_id'] ?? 0);
+    $admin = $adminId > 0
+        ? db_one('SELECT id, correo, nombre FROM administrador WHERE id = ?', [$adminId])
+        : null;
+
+    if ($admin === null) {
+        unset($_SESSION['admin_id'], $_SESSION['admin_nombre'], $_SESSION['admin_correo']);
+        redirect(APP_BASE . '/admin/login.php');
+    }
+
+    $_SESSION['admin_nombre'] = $admin['nombre'];
+    $_SESSION['admin_correo'] = $admin['correo'];
+}
+
 function pretty_name(?string $value): string
 {
     if ($value === null || $value === '') {

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 session_start();
 require_once dirname(__DIR__) . '/includes/functions.php';
+require_admin_auth();
 asegurar_columna_bloque_agregado_horario();
 asegurar_esquema_novedades();
 limpiar_avisos_temporales_eliminacion();

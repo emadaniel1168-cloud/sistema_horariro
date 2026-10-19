@@ -11,6 +11,11 @@ require_once __DIR__ . '/functions.php';
 $pageTitle = $pageTitle ?? APP_NAME;
 $sectionTitle = $sectionTitle ?? 'Inicio';
 $flash = flash_get();
+$adminName = (string) ($_SESSION['admin_nombre'] ?? 'Administrador');
+$adminInitials = '';
+foreach (array_slice(preg_split('/\s+/u', trim($adminName)) ?: [], 0, 2) as $namePart) {
+    $adminInitials .= strtoupper(substr($namePart, 0, 1));
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -33,7 +38,7 @@ $flash = flash_get();
             </div>
             <div class="topbar-tools">
                 <span class="connection-status"><span class="status-indicator"></span>Base conectada</span>
-                <span class="user-chip"><span class="user-avatar">AD</span>Administrador</span>
+                <span class="user-chip"><span class="user-avatar"><?= e($adminInitials) ?></span><?= e($adminName) ?></span>
             </div>
         </header>
         <main class="content">

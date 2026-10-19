@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 session_start();
 require_once dirname(__DIR__) . '/includes/functions.php';
+require_admin_auth();
 
 $sectionTitle = 'Novedades de horario';
 $calendarios = db_all('SELECT id_calendario, nombre FROM calendarios ORDER BY id_calendario');
