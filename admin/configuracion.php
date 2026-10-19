@@ -16,7 +16,7 @@ if ($admin === null) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_csrf();
     try {
-        $campos = ['nombre', 'correo', 'contrasena_actual', 'contrasena_nueva', 'confirmar_contrasena'];
+        $campos = ['nombre', 'correo', 'contrasena_nueva', 'confirmar_contrasena'];
         foreach ($campos as $campo) {
             if (isset($_POST[$campo]) && !is_string($_POST[$campo])) {
                 throw new RuntimeException('Los datos enviados no son válidos.');
@@ -24,7 +24,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $nombre = trim($_POST['nombre'] ?? '');
         $correo = strtolower(trim($_POST['correo'] ?? ''));
-        $contrasenaActual = $_POST['contrasena_actual'] ?? '';
         $contrasenaNueva = $_POST['contrasena_nueva'] ?? '';
         $confirmarContrasena = $_POST['confirmar_contrasena'] ?? '';
         $nombreLength = preg_match_all('/./us', $nombre);
@@ -35,17 +34,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!filter_var($correo, FILTER_VALIDATE_EMAIL) || strlen($correo) > 254) {
             throw new RuntimeException('Ingrese un correo electrónico válido.');
         }
-        if (!password_verify($contrasenaActual, $admin['contrasena'])) {
-            throw new RuntimeException('La contraseña actual no es correcta.');
-        }
         if (db_one('SELECT id FROM administrador WHERE correo = ? AND id <> ?', [$correo, $adminId]) !== null) {
             throw new RuntimeException('Ese correo electrónico ya está en uso.');
         }
-        if ($contrasenaNueva !== '' && strlen($contrasenaNueva) < 8) {
-            throw new RuntimeException('La nueva contraseña debe tener al menos 8 caracteres.');
-        }
-        if ($contrasenaNueva !== $confirmarContrasena) {
-            throw new RuntimeException('La confirmación de la nueva contraseña no coincide.');
+        if ($contrasenaNueva !== '') {
+            if (strlen($contrasenaNueva) < 8) {
+                throw new RuntimeException('La nueva contraseña debe tener al menos 8 caracteres.');
+            }
+            if ($contrasenaNueva !== $confirmarContrasena) {
+                throw new RuntimeException('La confirmación de la nueva contraseña no coincide.');
+            }
+        } elseif ($confirmarContrasena !== '') {
+            throw new RuntimeException('Ingrese la nueva contraseña para poder confirmarla.');
         }
 
         if ($contrasenaNueva !== '') {
@@ -77,7 +77,7 @@ require dirname(__DIR__) . '/includes/header.php';
             <p class="muted">Actualiza el nombre, correo o contraseña de acceso.</p>
         </div>
     </div>
-    <form method="post" action="<?= e(APP_BASE) ?>/admin/configuracion.php">
+    <form method="post" action="<?= e(APP_BASE) ?>/admin/configuracion.php" novalidate data-spanish-validation>
         <?= csrf_field() ?>
         <div class="grid-2">
             <div class="field">
@@ -91,21 +91,27 @@ require dirname(__DIR__) . '/includes/header.php';
         </div>
         <div class="account-password-section">
             <h3>Cambiar contraseña</h3>
-            <p class="muted">Deja en blanco la nueva contraseña si no deseas cambiarla.</p>
+            <p class="muted">Para cambiarla, completa y confirma la nueva contraseña.</p>
             <div class="grid-2">
                 <div class="field">
                     <label for="contrasena_nueva">Nueva contraseña</label>
-                    <input id="contrasena_nueva" name="contrasena_nueva" type="password" minlength="8" autocomplete="new-password">
+                    <div class="password-input">
+                        <input id="contrasena_nueva" name="contrasena_nueva" type="password" minlength="8" autocomplete="new-password">
+                        <button class="password-toggle" type="button" data-password-toggle aria-label="Mostrar nueva contraseña" aria-pressed="false">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m4 4 16 16"/></svg>
+                        </button>
+                    </div>
                 </div>
                 <div class="field">
                     <label for="confirmar_contrasena">Confirmar nueva contraseña</label>
-                    <input id="confirmar_contrasena" name="confirmar_contrasena" type="password" minlength="8" autocomplete="new-password">
+                    <div class="password-input">
+                        <input id="confirmar_contrasena" name="confirmar_contrasena" type="password" minlength="8" autocomplete="new-password">
+                        <button class="password-toggle" type="button" data-password-toggle aria-label="Mostrar confirmación de contraseña" aria-pressed="false">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m4 4 16 16"/></svg>
+                        </button>
+                    </div>
                 </div>
             </div>
-        </div>
-        <div class="field">
-            <label for="contrasena_actual">Contraseña actual para guardar cambios</label>
-            <input id="contrasena_actual" name="contrasena_actual" type="password" autocomplete="current-password" required>
         </div>
         <button class="btn btn-primary" type="submit">Guardar cambios</button>
     </form>

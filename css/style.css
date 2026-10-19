@@ -558,6 +558,29 @@ tbody tr:hover { background: var(--bg); }
     color: var(--text);
     font: inherit;
 }
+.password-input { position: relative; }
+.password-input input { padding-right: 48px !important; }
+.password-toggle {
+    position: absolute;
+    top: 50%;
+    right: 7px;
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    padding: 6px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: #71839d;
+    cursor: pointer;
+    transform: translateY(-50%);
+}
+.password-toggle:hover { background: #eef4fb; color: var(--blue-dark); }
+.password-toggle:focus-visible { outline: 0; box-shadow: var(--focus-ring); }
+.password-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+.password-toggle .eye-slash { display: none; }
+.password-toggle[aria-pressed="false"] .eye-slash { display: block; }
 .auth-card input:focus, .account-settings input:focus { outline: 0; border-color: var(--blue); box-shadow: var(--focus-ring); }
 .auth-submit { width: 100%; justify-content: center; margin-top: 5px; }
 .auth-hint { margin: 18px 0 0; color: #71839d; font-size: 11px; text-align: center; }

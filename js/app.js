@@ -1,4 +1,48 @@
 document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('form[data-spanish-validation]').forEach((form) => {
+        const spanishMessage = (input) => {
+            const validity = input.validity;
+            if (validity.valueMissing) {
+                return input.type === 'email'
+                    ? 'Por favor, escribe tu correo electrónico.'
+                    : 'Completa este campo.';
+            }
+            if (validity.typeMismatch && input.type === 'email') {
+                return "Incluye un '@' en la dirección de correo electrónico.";
+            }
+            if (validity.tooShort) {
+                return `Escribe al menos ${input.minLength} caracteres.`;
+            }
+            if (validity.tooLong) {
+                return `Escribe como máximo ${input.maxLength} caracteres.`;
+            }
+            if (validity.patternMismatch) {
+                return 'Revisa el formato de este campo.';
+            }
+            if (validity.badInput) {
+                return 'Escribe un valor válido.';
+            }
+            return '';
+        };
+
+        const updateValidity = (input) => {
+            input.setCustomValidity('');
+            input.setCustomValidity(spanishMessage(input));
+        };
+
+        form.querySelectorAll('input, select, textarea').forEach((input) => {
+            input.addEventListener('input', () => updateValidity(input));
+            input.addEventListener('change', () => updateValidity(input));
+        });
+
+        form.addEventListener('submit', (event) => {
+            form.querySelectorAll('input, select, textarea').forEach(updateValidity);
+            if (!form.reportValidity()) {
+                event.preventDefault();
+            }
+        });
+    });
+
     const applyCancelObservation = (form) => {
         const stateSelect = form.querySelector('select[name="estado"]');
         const observationField = form.querySelector('textarea[name="observacion"]');
@@ -103,6 +147,22 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     document.querySelectorAll('form[data-class-editor], form[data-novelty-form]').forEach(applyCancelObservation);
+    document.querySelectorAll('[data-password-toggle]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const input = button.parentElement?.querySelector('input');
+            if (!(input instanceof HTMLInputElement)) return;
+            const isVisible = input.type === 'text';
+            input.type = isVisible ? 'password' : 'text';
+            button.setAttribute('aria-pressed', String(!isVisible));
+            const labels = {
+                contrasena: 'contraseña',
+                contrasena_actual: 'contraseña actual',
+                contrasena_nueva: 'nueva contraseña',
+                confirmar_contrasena: 'confirmación de contraseña',
+            };
+            button.setAttribute('aria-label', `${isVisible ? 'Mostrar' : 'Ocultar'} ${labels[input.id]}`);
+        });
+    });
     document.addEventListener('change', (event) => {
         const target = event.target;
         if (target instanceof HTMLInputElement && target.name === 'auto_observaciones') {

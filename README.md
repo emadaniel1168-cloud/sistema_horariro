@@ -7,4 +7,4 @@ Al abrir la aplicación se muestra la pantalla de inicio de sesión. En la prime
 - Correo: `administrador1234@gmail.com`
 - Contraseña: `admin123`
 
-Después de iniciar sesión, selecciona **Configuración de cuenta** al final del menú para cambiar el nombre, el correo o la contraseña. Se solicita la contraseña actual para guardar cambios, y las contraseñas se almacenan con hash. Se recomienda cambiar la contraseña inicial.
+Después de iniciar sesión, selecciona **Configuración de cuenta** al final del menú para cambiar el nombre, el correo o la contraseña. Para cambiar la contraseña, escribe y confirma la nueva clave; se almacena con hash. Se recomienda cambiar la contraseña inicial.

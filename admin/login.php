@@ -57,7 +57,7 @@ $flash = flash_get();
     <?php if ($error !== ''): ?>
         <div class="alert alert-error" role="alert"><?= e($error) ?></div>
     <?php endif; ?>
-    <form method="post" action="<?= e(APP_BASE) ?>/admin/login.php">
+    <form method="post" action="<?= e(APP_BASE) ?>/admin/login.php" novalidate data-spanish-validation>
         <?= csrf_field() ?>
         <div class="field">
             <label for="correo">Correo electrónico</label>
@@ -65,11 +65,16 @@ $flash = flash_get();
         </div>
         <div class="field">
             <label for="contrasena">Contraseña</label>
-            <input id="contrasena" name="contrasena" type="password" autocomplete="current-password" required>
+            <div class="password-input">
+                <input id="contrasena" name="contrasena" type="password" autocomplete="current-password" required>
+                <button class="password-toggle" type="button" data-password-toggle aria-label="Mostrar contraseña" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m4 4 16 16"/></svg>
+                </button>
+            </div>
         </div>
         <button class="btn btn-primary auth-submit" type="submit">Iniciar sesión</button>
     </form>
-    <p class="auth-hint">Acceso inicial: administrador1234@gmail.com · admin123</p>
 </main>
+<script src="<?= e(APP_BASE) ?>/js/app.js?v=<?= (int) filemtime(dirname(__DIR__) . '/js/app.js') ?>-<?= (int) filesize(dirname(__DIR__) . '/js/app.js') ?>"></script>
 </body>
 </html>
