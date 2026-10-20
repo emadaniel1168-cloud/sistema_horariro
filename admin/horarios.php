@@ -1648,7 +1648,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     db_exec(
                         'INSERT INTO novedades_temporales (grupo_novedad, id_horario, expira_en, observacion)
-                         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 3 MINUTE), ?)',
+                         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 20 SECOND), ?)',
                         [bin2hex(random_bytes(16)), $idCreado, $observacionPermanente]
                     );
                 } else {
@@ -1706,7 +1706,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw $e;
             }
             flash_set('success', $guardarPermanente
-                ? 'Clase guardada permanentemente en el horario semanal y resaltada durante 3 minutos: ' . $resumenClase . '.'
+                ? 'Clase guardada permanentemente en el horario semanal y resaltada durante 20 segundos: ' . $resumenClase . '.'
                 : 'Novedad registrada para ' . post('fecha') . ' sin modificar el horario semanal: ' . $resumenClase . '.');
             $backGrado = $g;
         } elseif ($action === 'cancel_addition') {
@@ -1813,7 +1813,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     db_exec(
                         'INSERT INTO novedades_temporales (grupo_novedad, id_horario, expira_en, observacion)
-                         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 3 MINUTE), ?)',
+                         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 20 SECOND), ?)',
                         [bin2hex(random_bytes(16)), $idCreado, 'Clase guardada permanentemente desde una novedad: ' . $resumenClase]
                     );
                     db()->commit();
@@ -1823,7 +1823,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     throw $e;
                 }
-                flash_set('success', 'La clase se guardó permanentemente y se resaltará durante 3 minutos.');
+                flash_set('success', 'La clase se guardó permanentemente y se resaltará durante 20 segundos.');
             } else {
                 db_exec(
                     "UPDATE novedades_cambios_horario
@@ -2047,7 +2047,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } else {
                         db_exec(
                             'INSERT INTO novedades_temporales (grupo_novedad, id_horario, expira_en, observacion)
-                             VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 3 MINUTE), ?)',
+                             VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 20 SECOND), ?)',
                             [bin2hex(random_bytes(16)), $id, 'Cambios aplicados permanentemente desde el horario semanal: ' . implode('; ', $detallesNovedad)]
                         );
                     }
@@ -2124,14 +2124,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'id_grado' => (string) $anterior['id_grado'],
                     'id_dia' => (int) $anterior['id_dia'],
                     'id_bloque' => (int) $anterior['id_bloque'],
-                    'expira_en' => time() + 60,
+                    'expira_en' => time() + 20,
                 ];
             }
             $restauradoAlOriginal = $novedadesExistentes && !$hayCambios;
             flash_set('success', $guardarPermanente && $hayCambios
                 ? ($eliminarClaseCanceladaPermanentemente
                     ? 'La clase fue eliminada permanentemente del horario semanal.'
-                    : 'Cambios guardados permanentemente en el horario semanal. Se resaltarán durante 3 minutos.')
+                    : 'Cambios guardados permanentemente en el horario semanal. Se resaltarán durante 20 segundos.')
                 : ($hayCambios
                 ? 'Novedad registrada para ' . $fechaNovedad . '. El horario semanal original no fue modificado.'
                 : ($restauradoAlOriginal || post('restaurar_original', '0') === '1'
@@ -2540,9 +2540,9 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                 <button class="btn btn-primary" type="submit">Guardar</button>
             <?php endif; ?>
             <?php if (isset($row['id_horario'])): ?>
-                <button class="btn btn-secondary" type="submit" data-save-permanently data-confirm="Los cambios se aplicarán permanentemente al horario semanal. Se mostrarán en verde durante 3 minutos y luego quedarán guardados sin resaltado. ¿Desea continuar?">Guardar permanente</button>
+                <button class="btn btn-secondary" type="submit" data-save-permanently data-confirm="Los cambios se aplicarán permanentemente al horario semanal. Se mostrarán en verde durante 20 segundos y luego quedarán guardados sin resaltado. ¿Desea continuar?">Guardar permanente</button>
             <?php elseif (!$soloGuardarClase && $idAdicion === null): ?>
-                <button class="btn btn-secondary" type="submit" data-save-permanently data-confirm="La clase se agregará al horario semanal de forma permanente y se resaltará en verde durante 3 minutos. ¿Desea continuar?">Guardar permanente</button>
+                <button class="btn btn-secondary" type="submit" data-save-permanently data-confirm="La clase se agregará al horario semanal de forma permanente y se resaltará en verde durante 20 segundos. ¿Desea continuar?">Guardar permanente</button>
             <?php endif; ?>
         </div>
     </form>
@@ -2764,7 +2764,7 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                                             <small><?= e($profesorVisible ?: 'Sin profesor') ?></small>
                                             <small><?= e($salonVisible ?: 'Sin salón') ?></small>
                                             <?php if ($horaVisible): ?><small><?= e($horaVisible) ?></small><?php endif; ?>
-                                            <small><?= $esLibre ? 'DESCANSO' : ($esTemporal ? 'NOVEDAD TEMPORAL · 3 MIN' : ($isNovedad ? 'NOVEDAD' : e($estadoVisible))) ?></small>
+                                            <small><?= $esLibre ? 'DESCANSO' : ($esTemporal ? 'NOVEDAD TEMPORAL · 20 S' : ($isNovedad ? 'NOVEDAD' : e($estadoVisible))) ?></small>
                                         <?php endif; ?>
                                         <?php if ($esCancelada && $observacionVisible !== ''): ?><small class="schedule-novelty-note"><?= e($observacionVisible) ?></small><?php endif; ?>
                                     </div>

@@ -587,7 +587,7 @@ function asegurar_tabla_novedades_temporales(): void
 {
     static $ready = false;
     if ($ready) {
-        db_exec('UPDATE novedades_temporales SET expira_en = DATE_ADD(creado_en, INTERVAL 3 MINUTE) WHERE expira_en > DATE_ADD(creado_en, INTERVAL 3 MINUTE)');
+        db_exec('UPDATE novedades_temporales SET expira_en = DATE_ADD(creado_en, INTERVAL 20 SECOND) WHERE expira_en > DATE_ADD(creado_en, INTERVAL 20 SECOND)');
         db_exec('DELETE FROM novedades_temporales WHERE expira_en <= NOW()');
         return;
     }
@@ -607,7 +607,7 @@ function asegurar_tabla_novedades_temporales(): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
     );
     $ready = true;
-    db_exec('UPDATE novedades_temporales SET expira_en = DATE_ADD(creado_en, INTERVAL 3 MINUTE) WHERE expira_en > DATE_ADD(creado_en, INTERVAL 3 MINUTE)');
+    db_exec('UPDATE novedades_temporales SET expira_en = DATE_ADD(creado_en, INTERVAL 20 SECOND) WHERE expira_en > DATE_ADD(creado_en, INTERVAL 20 SECOND)');
     db_exec('DELETE FROM novedades_temporales WHERE expira_en <= NOW()');
 }
 
@@ -617,7 +617,7 @@ function limpiar_avisos_temporales_eliminacion(): void
         "DELETE FROM novedades_cambios_horario
          WHERE tipo_cambio = 'ELIMINACION'
            AND estado <> 'ARCHIVADO'
-           AND creado_en <= DATE_SUB(NOW(), INTERVAL 3 MINUTE)"
+           AND creado_en <= DATE_SUB(NOW(), INTERVAL 20 SECOND)"
     );
 }
 

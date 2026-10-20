@@ -322,7 +322,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 db_exec('DELETE FROM novedades_temporales WHERE id_horario = ?', [$clase['id_horario']]);
                                 db_exec(
                                     'INSERT INTO novedades_temporales (grupo_novedad, id_horario, expira_en, observacion)
-                                     VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 3 MINUTE), ?)',
+                                     VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 20 SECOND), ?)',
                                     [
                                         $grupoTemporal,
                                         $clase['id_horario'],
@@ -394,7 +394,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'success',
                     $guardarPermanente
                         ? 'Vínculo permanente guardado. Profesor agregado a ' . $clasesAgregadas . ' clase(s) sin profesor.'
-                            . ($clasesAgregadas > 0 ? ' Las novedades temporales serán visibles durante 3 minutos; el horario conservará los cambios.' : ' No había clases sin profesor; no se generaron novedades temporales.')
+                            . ($clasesAgregadas > 0 ? ' Las novedades temporales serán visibles durante 20 segundos; el horario conservará los cambios.' : ' No había clases sin profesor; no se generaron novedades temporales.')
                         : ($clasesAgregadas > 0
                             ? 'Profesor agregado a ' . $clasesAgregadas . ' clase(s) sin asignación. Información actualizada correctamente.'
                             : 'Información actualizada correctamente.')

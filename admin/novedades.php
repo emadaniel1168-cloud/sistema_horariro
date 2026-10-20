@@ -608,7 +608,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $aviso = db_one(
                 "SELECT id_cambio FROM novedades_cambios_horario
                  WHERE id_cambio = ? AND tipo_cambio = 'ELIMINACION'
-                   AND creado_en > DATE_SUB(NOW(), INTERVAL 3 MINUTE)",
+                   AND creado_en > DATE_SUB(NOW(), INTERVAL 20 SECOND)",
                 [$id]
             );
             if (!$aviso) {
@@ -632,7 +632,7 @@ $rows = db_all(
             n.nuevo_profesor, n.nueva_materia, n.nuevo_salon, n.nueva_hora_inicio, n.nueva_hora_fin,
                         CASE WHEN n.detalle LIKE 'AJUSTE_GENERAL_ENTRADA=%' THEN SUBSTRING_INDEX(n.detalle, '=', -1) END AS hora_entrada_ajuste,
               CASE WHEN n.tipo_cambio = 'ELIMINACION' AND n.estado <> 'ARCHIVADO'
-                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 3 MINUTE) THEN 'ELIMINADA'
+                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 20 SECOND) THEN 'ELIMINADA'
                   ELSE n.estado END AS estado,
               n.creado_en,
             COALESCE(NULLIF(n.observacion, ''), n.detalle, '') AS observacion,
@@ -651,15 +651,15 @@ $rows = db_all(
             TIME_FORMAT(n.nueva_hora_inicio, '%H:%i') AS hora_nueva_inicio,
             TIME_FORMAT(n.nueva_hora_fin, '%H:%i') AS hora_nueva_fin,
             CASE WHEN n.tipo_cambio = 'ELIMINACION' AND n.estado <> 'ARCHIVADO'
-                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 3 MINUTE) THEN 1 ELSE 0 END AS eliminada,
+                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 20 SECOND) THEN 1 ELSE 0 END AS eliminada,
             CASE WHEN n.tipo_cambio = 'ELIMINACION' AND n.estado <> 'ARCHIVADO'
-                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 3 MINUTE) THEN 1 ELSE 0 END AS temporal,
+                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 20 SECOND) THEN 1 ELSE 0 END AS temporal,
             CASE WHEN n.tipo_cambio = 'ELIMINACION' AND n.estado <> 'ARCHIVADO'
-                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 3 MINUTE)
-                 THEN DATE_ADD(n.creado_en, INTERVAL 3 MINUTE) END AS expira_en,
+                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 20 SECOND)
+                 THEN DATE_ADD(n.creado_en, INTERVAL 20 SECOND) END AS expira_en,
             CASE WHEN n.tipo_cambio = 'ELIMINACION' AND n.estado <> 'ARCHIVADO'
-                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 3 MINUTE)
-                 THEN UNIX_TIMESTAMP(DATE_ADD(n.creado_en, INTERVAL 3 MINUTE)) END AS expira_timestamp
+                      AND n.creado_en > DATE_SUB(NOW(), INTERVAL 20 SECOND)
+                 THEN UNIX_TIMESTAMP(DATE_ADD(n.creado_en, INTERVAL 20 SECOND)) END AS expira_timestamp
     FROM novedades_cambios_horario n
      LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
      LEFT JOIN grados g ON g.id_grado = COALESCE(h.id_grado, n.id_grado)
@@ -1030,9 +1030,9 @@ require dirname(__DIR__) . '/includes/header.php';
                         <span class="change-highlight"><?= $esRegistroHistorico ? 'REGISTRO HISTÓRICO · BLOQUE' : 'NOVEDAD NORMAL · BLOQUE' ?></span><br>
                         <small><?= e((string) ($row['observacion_general'] ?? $row['observacion'] ?? 'Bloque agregado al horario semanal.')) ?></small>
                     <?php elseif (!empty($row['eliminada'])): ?>
-                        <span class="temporary-novelty-badge">CLASE ELIMINADA · TEMPORAL 3 MIN</span><br>
+                        <span class="temporary-novelty-badge">CLASE ELIMINADA · TEMPORAL 20 S</span><br>
                         <small><?= e((string) ($row['observacion'] ?? 'Clase eliminada permanentemente.')) ?></small>
-                    <?php elseif (!empty($row['temporal'])): ?><span class="temporary-novelty-badge">CAMBIO TEMPORAL · 3 MIN</span><br><?php endif; ?>
+                    <?php elseif (!empty($row['temporal'])): ?><span class="temporary-novelty-badge">CAMBIO TEMPORAL · 20 S</span><br><?php endif; ?>
                     <?php if (!empty($row['eliminada']) || !empty($row['adicion']) || !empty($row['bloque_agregado'])): ?>
                     <?php elseif (!empty($row['temporal'])): ?><span class="temporary-novelty-text"><?= e(observacion_sin_flechas((string) $row['observacion'])) ?></span><br>
                     <?php elseif ($row['profesor_nuevo']): ?><span class="change-highlight">Profesor: <?= e($profesorAnterior) ?> → <?= e($row['profesor_nuevo']) ?></span><br><?php endif; ?>
