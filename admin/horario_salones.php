@@ -133,7 +133,7 @@ if ($salonSeleccionado && $diasTabla !== []) {
          WHERE b.id_calendario IN (
             SELECT DISTINCT id_calendario FROM grados WHERE activo = 1
          )
-         ORDER BY hora_inicio, hora_fin, b.tipo, b.descripcion"
+         ORDER BY hora_inicio, hora_fin, tipo, descripcion"
     );
     foreach ($bloquesCrudos as $bloque) {
         $clave = salon_clave_bloque($bloque);
