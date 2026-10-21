@@ -2,6 +2,7 @@
 $navItems = [
     ['index.php', '⌂', 'Inicio'],
     ['horarios.php', '▦', 'Horario semanal'],
+    ['horario_salones.php', '▢', 'Salones'],
     ['ajustes_horario.php', '◷', 'Ajustes generales'],
     ['novedades.php', '!', 'Novedades'],
     ['grados.php', '▤', 'Grados'],

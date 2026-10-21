@@ -365,7 +365,9 @@ function sincronizar_novedades_con_horario(): void
 
 function registrar_novedad_cancelacion_horario(int $idHorario, string $grupo, string $observacion, string $fecha): void
 {
-    $observacion = 'Clase cancelada desde el horario semanal.';
+    $observacion = trim($observacion) !== ''
+        ? trim($observacion)
+        : 'Clase cancelada desde el horario semanal.';
     asegurar_esquema_novedades();
     $existente = db_one(
         "SELECT id_cambio, observacion FROM novedades_cambios_horario

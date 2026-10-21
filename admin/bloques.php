@@ -69,84 +69,185 @@ function eliminar_calendario_si_esta_vacio(int $idCalendario): void
     db_exec('DELETE FROM calendarios WHERE id_calendario = ?', [$idCalendario]);
 }
 
-function compactar_bloque_eliminado(array $bloque): bool
+function firma_bloque_por_dia(string $idGrado, int $idBloque): array
 {
-    if ((string) $bloque['tipo'] !== 'CLASE') {
-        return false;
-    }
-
-    $idBloque = (int) $bloque['id_bloque'];
-    $idCalendario = (int) $bloque['id_calendario'];
-    $hayClasesReales = db_count('SELECT COUNT(*) AS total FROM horario_semanal WHERE id_bloque = ?', [$idBloque]) > 0
-        || db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque = ?', [$idBloque]) > 0;
-    if ($hayClasesReales) {
-        return false;
-    }
-    $bloqueSiguiente = db_one(
-        "SELECT * FROM bloques_horarios
-         WHERE id_calendario = ? AND tipo = 'CLASE' AND hora_inicio = ? AND id_bloque <> ?
-         ORDER BY hora_inicio, numero_bloque, id_bloque
-         LIMIT 1 FOR UPDATE",
-        [$idCalendario, $bloque['hora_fin'], $idBloque]
-    );
-    if (!$bloqueSiguiente) {
-        return false;
-    }
-
-    $grados = db_all(
-        'SELECT DISTINCT id_grado FROM horario_semanal WHERE id_bloque = ? ORDER BY id_grado',
+    $bloque = db_one(
+        'SELECT tipo FROM bloques_horarios WHERE id_bloque = ?',
         [$idBloque]
     );
-    foreach ($grados as $grado) {
-        $idGrado = (int) $grado['id_grado'];
-        $clasesActuales = db_all(
-            'SELECT id_horario, id_dia, id_materia, id_profesor, id_salon, estado, observacion
-             FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? ORDER BY id_dia',
+    if (!$bloque) {
+        return [];
+    }
+
+    $filas = db_all(
+        'SELECT d.orden_dia, h.id_horario, h.id_materia, h.id_profesor, h.id_salon, h.estado, h.observacion
+         FROM dias_semana d
+         LEFT JOIN horario_semanal h
+           ON h.id_dia = d.id_dia AND h.id_grado = ? AND h.id_bloque = ?
+         WHERE d.orden_dia BETWEEN 1 AND 5
+         ORDER BY d.orden_dia',
+        [$idGrado, $idBloque]
+    );
+    $descansosMarcados = array_fill_keys(array_map(
+        'intval',
+        array_column(db_all(
+            'SELECT d.orden_dia FROM descansos_por_dia dp
+             JOIN dias_semana d ON d.id_dia = dp.id_dia
+             WHERE dp.id_grado = ? AND dp.id_bloque = ? AND d.orden_dia BETWEEN 1 AND 5',
             [$idGrado, $idBloque]
-        );
-        $clasesSiguientes = db_all(
-            'SELECT id_horario, id_dia, id_materia, id_profesor, id_salon, estado, observacion
-             FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? ORDER BY id_dia',
-            [$idGrado, (int) $bloqueSiguiente['id_bloque']]
-        );
+        ), 'orden_dia')
+    ), true);
 
-        $siguientesPorDia = [];
-        foreach ($clasesSiguientes as $claseSiguiente) {
-            $siguientesPorDia[(int) $claseSiguiente['id_dia']] = $claseSiguiente;
-        }
-
-        foreach ($clasesActuales as $claseActual) {
-            $claseSiguiente = $siguientesPorDia[(int) $claseActual['id_dia']] ?? null;
-            if ($claseSiguiente) {
-                $campos = ['id_materia', 'id_profesor', 'id_salon', 'estado', 'observacion'];
-                foreach ($campos as $campo) {
-                    if ($claseActual[$campo] !== $claseSiguiente[$campo]) {
-                        throw new RuntimeException('No se puede compactar este bloque porque hay clases incompatibles en el siguiente tramo.');
-                    }
-                }
-            }
+    $firmas = [];
+    foreach ($filas as $fila) {
+        $dia = (int) $fila['orden_dia'];
+        $esDescanso = isset($descansosMarcados[$dia])
+            || ($fila['id_horario'] !== null && $fila['estado'] === 'DESCANSO')
+            || ($fila['id_horario'] === null && $bloque['tipo'] === 'DESCANSO');
+        if ($esDescanso) {
+            $firmas[$dia] = ['DESCANSO'];
+        } elseif ($fila['id_horario'] === null) {
+            $firmas[$dia] = ['VACIO'];
+        } else {
+            $firmas[$dia] = [
+                'CLASE',
+                $fila['id_materia'],
+                $fila['id_profesor'],
+                $fila['id_salon'],
+                $fila['estado'],
+                $fila['observacion'],
+            ];
         }
     }
 
-    db()->beginTransaction();
+    if (count($firmas) !== 5) {
+        return [];
+    }
+
+    return $firmas;
+}
+
+function compactar_bloque_eliminado(array $bloque): bool
+{
+    asegurar_tabla_descansos_por_dia();
+    asegurar_tabla_horario_original_novedad();
+    $pdo = db();
+    $pdo->beginTransaction();
+
     try {
-        db_exec(
-            'UPDATE bloques_horarios SET hora_inicio = ? WHERE id_bloque = ?',
-            [$bloque['hora_inicio'], (int) $bloqueSiguiente['id_bloque']]
+        $idBloque = (int) $bloque['id_bloque'];
+        $idCalendario = (int) $bloque['id_calendario'];
+        $bloque = db_one(
+            'SELECT id_bloque, id_calendario, tipo, hora_inicio, hora_fin
+             FROM bloques_horarios WHERE id_bloque = ? FOR UPDATE',
+            [$idBloque]
         );
-        foreach ($grados as $grado) {
-            $idGrado = (int) $grado['id_grado'];
+        if (!$bloque || (int) $bloque['id_calendario'] !== $idCalendario) {
+            $pdo->rollBack();
+            return false;
+        }
+
+        $anterior = db_one(
+            'SELECT id_bloque, tipo, hora_inicio, hora_fin FROM bloques_horarios
+             WHERE id_calendario = ? AND hora_fin = ? AND id_bloque NOT IN (24, 25)
+             ORDER BY hora_inicio DESC, id_bloque DESC LIMIT 1 FOR UPDATE',
+            [$idCalendario, $bloque['hora_inicio']]
+        );
+        $siguiente = db_one(
+            'SELECT id_bloque, tipo, hora_inicio, hora_fin FROM bloques_horarios
+             WHERE id_calendario = ? AND hora_inicio = ? AND id_bloque NOT IN (24, 25)
+             ORDER BY hora_fin, id_bloque LIMIT 1 FOR UPDATE',
+            [$idCalendario, $bloque['hora_fin']]
+        );
+        $candidatos = array_values(array_filter([$anterior, $siguiente]));
+        usort($candidatos, static function (array $a, array $b): int {
+            $prioridadA = $a['tipo'] === 'CLASE' ? 0 : 1;
+            $prioridadB = $b['tipo'] === 'CLASE' ? 0 : 1;
+            return ($prioridadA <=> $prioridadB)
+                ?: ($a['hora_inicio'] <=> $b['hora_inicio']);
+        });
+
+        $grados = db_all(
+            'SELECT id_grado FROM grados WHERE id_calendario = ?
+             UNION
+             SELECT id_grado FROM horario_semanal WHERE id_bloque IN (?, ?)
+             UNION
+             SELECT id_grado FROM descansos_por_dia WHERE id_bloque IN (?, ?)
+             ORDER BY id_grado',
+            [$idCalendario, $idBloque, $idBloque, $idBloque, $idBloque]
+        );
+        if (!$grados) {
+            $pdo->rollBack();
+            return false;
+        }
+        $vecinoCompatible = null;
+        foreach ($candidatos as $candidato) {
+            $idVecino = (int) $candidato['id_bloque'];
+            if (db_count(
+                'SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque IN (?, ?)',
+                [$idBloque, $idVecino]
+            ) > 0
+                || db_count(
+                    'SELECT COUNT(*) AS total FROM disponibilidad_profesores WHERE id_bloque IN (?, ?)',
+                    [$idBloque, $idVecino]
+                ) > 0
+                || db_count(
+                    'SELECT COUNT(*) AS total FROM horario_original_novedad o
+                     JOIN horario_semanal h ON h.id_horario = o.id_horario
+                     WHERE h.id_bloque IN (?, ?)',
+                    [$idBloque, $idVecino]
+                ) > 0) {
+                continue;
+            }
+
+            $compatible = true;
+            foreach ($grados as $grado) {
+                $idGrado = (string) $grado['id_grado'];
+                $firmaBloque = firma_bloque_por_dia($idGrado, $idBloque);
+                if (count($firmaBloque) !== 5
+                    || $firmaBloque !== firma_bloque_por_dia($idGrado, $idVecino)) {
+                    $compatible = false;
+                    break;
+                }
+            }
+            if ($compatible) {
+                $vecinoCompatible = $candidato;
+                break;
+            }
+        }
+
+        if (!$vecinoCompatible) {
+            $pdo->rollBack();
+            return false;
+        }
+
+        $idVecino = (int) $vecinoCompatible['id_bloque'];
+        $vecinoEsAnterior = $vecinoCompatible['hora_fin'] === $bloque['hora_inicio'];
+        if ($vecinoEsAnterior) {
             db_exec(
-                'UPDATE horario_semanal SET id_bloque = ? WHERE id_grado = ? AND id_bloque = ?',
-                [(int) $bloqueSiguiente['id_bloque'], $idGrado, $idBloque]
+                'UPDATE bloques_horarios SET hora_fin = ? WHERE id_bloque = ?',
+                [$bloque['hora_fin'], $idVecino]
+            );
+        } else {
+            db_exec(
+                'UPDATE bloques_horarios SET hora_inicio = ? WHERE id_bloque = ?',
+                [$bloque['hora_inicio'], $idVecino]
             );
         }
+
+        db_exec(
+            'INSERT IGNORE INTO descansos_por_dia (id_grado, id_dia, id_bloque)
+             SELECT id_grado, id_dia, ? FROM descansos_por_dia WHERE id_bloque = ?',
+            [$idVecino, $idBloque]
+        );
+        db_exec('DELETE FROM horario_semanal WHERE id_bloque = ?', [$idBloque]);
         db_exec('DELETE FROM bloques_horarios WHERE id_bloque = ?', [$idBloque]);
-        db()->commit();
+        reordenar_bloques_clase_calendario($idCalendario);
+        $pdo->commit();
         return true;
     } catch (Throwable $e) {
-        if (db()->inTransaction()) {
-            db()->rollBack();
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
         }
         throw $e;
     }
@@ -276,7 +377,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($compactado) {
                     $idCalendario = (int) $bloque['id_calendario'];
                     eliminar_calendario_si_esta_vacio($idCalendario);
-                    flash_set('success', 'Se condensó la clase en el bloque siguiente y se eliminó el bloque actual.');
+                    flash_set('success', 'Se unificaron los bloques porque tienen las mismas clases o descansos de lunes a viernes.');
                 } else {
                     $hayClasesEnBloque = db_count('SELECT COUNT(*) AS total FROM horario_semanal WHERE id_bloque = ?', [$id]) > 0
                         || db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque = ?', [$id]) > 0;
@@ -292,10 +393,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash_set('success', 'Se liberaron las referencias y el bloque quedó eliminado para permitir crear otro nuevo.');
                 }
             } else {
-                db_exec('DELETE FROM bloques_horarios WHERE id_bloque = ?', [$id]);
-                eliminar_calendario_si_esta_vacio((int) $bloque['id_calendario']);
-                eliminar_calendario_personalizado_si_es_redundante((string) db_one('SELECT id_grado FROM grados WHERE id_calendario = ? AND activo = 1 LIMIT 1', [(int) $bloque['id_calendario']])['id_grado'], (int) $bloque['id_calendario']);
-                flash_set('success', 'Registro eliminado correctamente.');
+                $compactado = false;
+                try {
+                    $compactado = compactar_bloque_eliminado($bloque);
+                } catch (RuntimeException $e) {
+                    $compactado = false;
+                }
+                if ($compactado) {
+                    flash_set('success', 'Se unificaron los bloques porque tienen las mismas clases o descansos de lunes a viernes.');
+                } else {
+                    db_exec('DELETE FROM bloques_horarios WHERE id_bloque = ?', [$id]);
+                    eliminar_calendario_si_esta_vacio((int) $bloque['id_calendario']);
+                    $gradoCalendario = db_one(
+                        'SELECT id_grado FROM grados WHERE id_calendario = ? AND activo = 1 LIMIT 1',
+                        [(int) $bloque['id_calendario']]
+                    );
+                    if ($gradoCalendario) {
+                        eliminar_calendario_personalizado_si_es_redundante(
+                            (string) $gradoCalendario['id_grado'],
+                            (int) $bloque['id_calendario']
+                        );
+                    }
+                    flash_set('success', 'Registro eliminado correctamente.');
+                }
             }
         }
     } catch (PDOException $e) {

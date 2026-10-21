@@ -265,10 +265,34 @@ function parse_grupo_novedad(string $grupo): ?array
     if (preg_match('/^[a-f0-9]{32}$/', $grupo) === 1) {
         return ['tipo' => 'grupo', 'valor' => $grupo];
     }
+    if (preg_match('/^grado-grupo:([^:]+):([a-f0-9]{32})$/', $grupo, $matches) === 1) {
+        return ['tipo' => 'grupo_grado', 'grado' => $matches[1], 'valor' => $matches[2]];
+    }
     if (preg_match('/^grado:(.+):(\d{4}-\d{2}-\d{2})$/', $grupo, $matches) === 1) {
         return ['tipo' => 'grado_fecha', 'grado' => $matches[1], 'fecha' => $matches[2]];
     }
     return null;
+}
+
+function grupo_operacion_novedad(array $novedad): string
+{
+    $grupo = trim((string) ($novedad['grupo_novedad'] ?? ''));
+    $grado = trim((string) ($novedad['id_grado'] ?? ''));
+    if ($grado === '') {
+        return $grupo;
+    }
+    if (!empty($novedad['temporal'])) {
+        return !empty($novedad['fecha'])
+            ? grupo_novedad_para_grado_fecha($grado, (string) $novedad['fecha'])
+            : $grupo;
+    }
+    if (preg_match('/^[a-f0-9]{32}$/', $grupo) === 1) {
+        return 'grado-grupo:' . $grado . ':' . $grupo;
+    }
+    if (!empty($novedad['fecha'])) {
+        return grupo_novedad_para_grado_fecha($grado, (string) $novedad['fecha']);
+    }
+    return $grupo;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -410,8 +434,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $coincideGrupo = $grupo === ''
                     || (($grupoInfo['tipo'] ?? '') === 'grupo'
                         ? (string) ($novedad['grupo_novedad'] ?? '') === $grupo
-                        : ((string) ($novedad['id_grado'] ?? '') === (string) ($grupoInfo['grado'] ?? '')
-                            && (string) ($novedad['fecha'] ?? '') === (string) ($grupoInfo['fecha'] ?? '')));
+                        : (($grupoInfo['tipo'] ?? '') === 'grupo_grado'
+                            ? ((string) ($novedad['grupo_novedad'] ?? '') === (string) $grupoInfo['valor']
+                                && (string) ($novedad['id_grado'] ?? '') === (string) $grupoInfo['grado'])
+                            : ((string) ($novedad['id_grado'] ?? '') === (string) ($grupoInfo['grado'] ?? '')
+                                && (string) ($novedad['fecha'] ?? '') === (string) ($grupoInfo['fecha'] ?? ''))));
                 if (!$coincideGrupo) {
                     throw new RuntimeException('Una de las novedades ya no pertenece a este grupo.');
                 }
@@ -441,8 +468,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $coincideGrupo = ($grupoInfo['tipo'] ?? '') === 'grupo'
                     ? (string) ($novedadTemporal['grupo_novedad'] ?? '') === $grupo
-                    : ((string) ($novedadTemporal['id_grado'] ?? '') === (string) ($grupoInfo['grado'] ?? '')
-                        && (string) ($novedadTemporal['fecha'] ?? '') === (string) ($grupoInfo['fecha'] ?? ''));
+                    : (($grupoInfo['tipo'] ?? '') === 'grupo_grado'
+                        ? ((string) ($novedadTemporal['grupo_novedad'] ?? '') === (string) $grupoInfo['valor']
+                            && (string) ($novedadTemporal['id_grado'] ?? '') === (string) $grupoInfo['grado'])
+                        : ((string) ($novedadTemporal['id_grado'] ?? '') === (string) ($grupoInfo['grado'] ?? '')
+                            && (string) ($novedadTemporal['fecha'] ?? '') === (string) ($grupoInfo['fecha'] ?? '')));
                 if (!$coincideGrupo) {
                     throw new RuntimeException('Una de las novedades temporales ya no pertenece a este grupo.');
                 }
@@ -471,22 +501,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($grupoInfo === null) {
                         throw new RuntimeException('El grupo de novedades no es válido.');
                     }
-                    if ($grupoInfo['tipo'] === 'grupo') {
-                        $activas = db_count("SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE grupo_novedad = ? AND estado = 'ACTIVA'", [$grupo]);
-                        if (db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE grupo_novedad = ?', [$grupo]) === 0) {
+                    if (in_array($grupoInfo['tipo'], ['grupo', 'grupo_grado'], true)) {
+                        $filtroGrupo = 'n.grupo_novedad = ?';
+                        $parametrosGrupo = [$grupoInfo['tipo'] === 'grupo' ? $grupo : $grupoInfo['valor']];
+                        if ($grupoInfo['tipo'] === 'grupo_grado') {
+                            $filtroGrupo .= ' AND COALESCE(h.id_grado, n.id_grado) = ?';
+                            $parametrosGrupo[] = $grupoInfo['grado'];
+                        }
+                        $activas = db_count(
+                            "SELECT COUNT(*) AS total FROM novedades_cambios_horario n
+                             LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                             WHERE $filtroGrupo AND n.estado = 'ACTIVA'",
+                            $parametrosGrupo
+                        );
+                        if (db_count(
+                            "SELECT COUNT(*) AS total FROM novedades_cambios_horario n
+                             LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                             WHERE $filtroGrupo",
+                            $parametrosGrupo
+                        ) === 0) {
                             throw new RuntimeException('La novedad no existe.');
                         }
                         if ($activas > 0) {
                             $seDesactivo = true;
-                            $horariosAfectados = db_all('SELECT DISTINCT id_horario FROM novedades_cambios_horario WHERE grupo_novedad = ?', [$grupo]);
-                            db_exec("UPDATE novedades_cambios_horario SET estado = 'CANCELADA' WHERE grupo_novedad = ? AND estado = 'ACTIVA'", [$grupo]);
+                            $horariosAfectados = db_all(
+                                "SELECT DISTINCT n.id_horario FROM novedades_cambios_horario n
+                                 LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                                 WHERE $filtroGrupo",
+                                $parametrosGrupo
+                            );
+                            db_exec(
+                                "UPDATE novedades_cambios_horario n
+                                 LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                                 SET n.estado = 'CANCELADA'
+                                 WHERE $filtroGrupo AND n.estado = 'ACTIVA'",
+                                $parametrosGrupo
+                            );
                             foreach ($horariosAfectados as $horarioAfectado) {
                                 if (!empty($horarioAfectado['id_horario'])) {
                                     restaurar_horario_original_si_no_hay_novedades((int) $horarioAfectado['id_horario']);
                                 }
                             }
                         } else {
-                            db_exec("UPDATE novedades_cambios_horario SET estado = 'ACTIVA' WHERE grupo_novedad = ? AND estado = 'CANCELADA'", [$grupo]);
+                            db_exec(
+                                "UPDATE novedades_cambios_horario n
+                                 LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                                 SET n.estado = 'ACTIVA'
+                                 WHERE $filtroGrupo AND n.estado = 'CANCELADA'",
+                                $parametrosGrupo
+                            );
                         }
                     } else {
                         $activas = db_count(
@@ -555,9 +618,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($grupoInfo === null) {
                     throw new RuntimeException('El grupo de novedades no es válido.');
                 }
-                if ($grupoInfo['tipo'] === 'grupo') {
-                    $horariosAfectados = db_all('SELECT DISTINCT id_horario FROM novedades_cambios_horario WHERE grupo_novedad = ?', [$grupo]);
-                    db_exec('DELETE FROM novedades_cambios_horario WHERE grupo_novedad = ?', [$grupo]);
+                if (in_array($grupoInfo['tipo'], ['grupo', 'grupo_grado'], true)) {
+                    $filtroGrupo = 'n.grupo_novedad = ?';
+                    $parametrosGrupo = [$grupoInfo['tipo'] === 'grupo' ? $grupo : $grupoInfo['valor']];
+                    if ($grupoInfo['tipo'] === 'grupo_grado') {
+                        $filtroGrupo .= ' AND COALESCE(h.id_grado, n.id_grado) = ?';
+                        $parametrosGrupo[] = $grupoInfo['grado'];
+                    }
+                    $horariosAfectados = db_all(
+                        "SELECT DISTINCT n.id_horario FROM novedades_cambios_horario n
+                         LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                         WHERE $filtroGrupo",
+                        $parametrosGrupo
+                    );
+                    db_exec(
+                        "DELETE n FROM novedades_cambios_horario n
+                         LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                         WHERE $filtroGrupo",
+                        $parametrosGrupo
+                    );
                     foreach ($horariosAfectados as $horarioAfectado) {
                         if (!empty($horarioAfectado['id_horario'])) {
                             restaurar_horario_original_si_no_hay_novedades((int) $horarioAfectado['id_horario']);
@@ -598,10 +677,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash_set('success', 'Se eliminaron todas las novedades correctamente.');
         } elseif ($action === 'delete_temporary') {
             $grupo = post('grupo_novedad', '');
-            if (!preg_match('/^[a-f0-9]{32}$/', $grupo)) {
+            $grupoInfo = parse_grupo_novedad($grupo);
+            if ($grupoInfo === null) {
                 throw new RuntimeException('El grupo de novedades temporales no es válido.');
             }
-            db_exec('DELETE FROM novedades_temporales WHERE grupo_novedad = ?', [$grupo]);
+            if ($grupoInfo['tipo'] === 'grado_fecha') {
+                db_exec(
+                    'DELETE t FROM novedades_temporales t
+                     JOIN horario_semanal h ON h.id_horario = t.id_horario
+                     WHERE h.id_grado = ? AND DATE(t.creado_en) = ?',
+                    [$grupoInfo['grado'], $grupoInfo['fecha']]
+                );
+            } elseif ($grupoInfo['tipo'] === 'grupo') {
+                db_exec('DELETE FROM novedades_temporales WHERE grupo_novedad = ?', [$grupo]);
+            } else {
+                throw new RuntimeException('El grupo de novedades temporales no es válido.');
+            }
             flash_set('success', 'Novedad temporal eliminada correctamente.');
         } elseif ($action === 'dismiss_deleted') {
             $id = (int) post('id_novedad', '0');
@@ -676,7 +767,7 @@ $rows = db_all(
 );
 $novedadesAdicion = db_all(
     "SELECT n.id_cambio AS id_novedad, n.id_horario, n.tipo_cambio, n.grupo_novedad, n.fecha,
-            n.nuevo_profesor, n.nueva_materia, n.nuevo_salon, n.observacion, n.estado,
+            n.nuevo_profesor, n.nueva_materia, n.nuevo_salon, n.observacion, n.estado, n.creado_en,
             n.id_grado, n.id_dia, n.id_bloque, n.dia, n.materia, n.nueva_materia AS id_materia,
             NULL AS materia_nueva,
             TIME_FORMAT(n.hora_inicio, '%H:%i') AS hora_inicio,
@@ -691,7 +782,7 @@ $novedadesAdicion = db_all(
 array_push($rows, ...$novedadesAdicion);
 $novedadesBloques = db_all(
     "SELECT n.id_cambio AS id_novedad, n.id_horario, n.tipo_cambio, n.grupo_novedad, n.fecha,
-            n.estado, n.id_grado, n.id_bloque, b.numero_bloque, b.tipo AS tipo_bloque,
+            n.estado, n.creado_en, n.id_grado, n.id_bloque, b.numero_bloque, b.tipo AS tipo_bloque,
             TIME_FORMAT(b.hora_inicio, '%H:%i') AS hora_inicio,
             TIME_FORMAT(b.hora_fin, '%H:%i') AS hora_fin,
             'Horario semanal' AS dia, CONCAT('Bloque ', b.numero_bloque) AS materia,
@@ -708,7 +799,7 @@ array_push($rows, ...$novedadesBloques);
 $novedadesTemporales = $estadoF && $estadoF !== 'ACTIVA' ? [] : db_all(
         'SELECT t.id_temporal, t.grupo_novedad, t.id_horario, t.expira_en,
             UNIX_TIMESTAMP(t.expira_en) AS expira_timestamp,
-            t.observacion, DATE(t.creado_en) AS fecha, \'ACTIVA\' AS estado,
+            t.observacion, t.creado_en, DATE(t.creado_en) AS fecha, \'ACTIVA\' AS estado,
             h.id_grado, h.id_dia, h.id_profesor, h.id_materia, h.id_salon, h.id_bloque,
             d.nombre AS dia, m.nombre AS materia, NULL AS materia_nueva,
             TIME_FORMAT(b.hora_inicio, \'%H:%i\') AS hora_inicio, TIME_FORMAT(b.hora_fin, \'%H:%i\') AS hora_fin,
@@ -739,11 +830,11 @@ foreach ($rows as $row) {
     } elseif (!empty($row['adicion'])) {
         $claveGrupo = 'adicion-' . (int) $row['id_novedad'];
     } elseif (!empty($row['bloque_agregado'])) {
-        $claveGrupo = 'bloque-' . (string) ($row['grupo_novedad'] ?? $row['id_novedad']);
+        $claveGrupo = 'bloque-' . $gradoKey . '-' . (string) ($row['grupo_novedad'] ?? $row['id_novedad']);
     } elseif (!empty($row['temporal'])) {
         $claveGrupo = 'temporal-' . $gradoKey . '-' . $fechaKey;
     } elseif (!empty($row['grupo_novedad'])) {
-        $claveGrupo = 'grupo-id-' . (string) $row['grupo_novedad'];
+        $claveGrupo = 'grupo-id-' . $gradoKey . '-' . (string) $row['grupo_novedad'];
     } elseif (empty($row['fecha'])) {
         $claveGrupo = 'registro-' . (int) $row['id_novedad'];
     } else {
@@ -758,15 +849,26 @@ foreach ($rows as $row) {
 }
 
 foreach ($filasAgrupadas as &$grupo) {
+    $novedadMasReciente = $grupo['clases_afectadas'][0];
+    foreach ($grupo['clases_afectadas'] as $detalle) {
+        $fechaDetalle = (string) ($detalle['creado_en'] ?? '');
+        $fechaReciente = (string) ($novedadMasReciente['creado_en'] ?? '');
+        if ($fechaDetalle > $fechaReciente
+            || ($fechaDetalle === $fechaReciente && (int) ($detalle['id_novedad'] ?? 0) > (int) ($novedadMasReciente['id_novedad'] ?? 0))) {
+            $novedadMasReciente = $detalle;
+        }
+    }
+    $grupo['observacion'] = (string) ($novedadMasReciente['observacion'] ?? '');
+    $grupo['hora_entrada_ajuste'] = $novedadMasReciente['hora_entrada_ajuste'] ?? null;
     $grupo['observacion_general'] = !empty($grupo['eliminada'])
         ? 'Clase eliminada permanentemente del horario semanal.'
         : (!empty($grupo['adicion'])
             ? 'Clase añadida únicamente para la fecha seleccionada.'
             : (!empty($grupo['bloque_agregado'])
-                ? (string) ($grupo['observacion'] ?? '')
-                    : (empty($grupo['fecha']) && !empty($grupo['observacion'])
-                        ? (string) $grupo['observacion']
-                        : resumir_observaciones_grupo($grupo['clases_afectadas']))));
+                ? (string) ($novedadMasReciente['observacion'] ?? '')
+                : (!empty($novedadMasReciente['hora_entrada_ajuste'])
+                    ? resumir_observaciones_grupo($grupo['clases_afectadas'])
+                    : trim((string) ($novedadMasReciente['observacion'] ?? '')))));
     usort($grupo['clases_afectadas'], static function (array $a, array $b): int {
         $horaA = (string) ($a['hora_inicio'] ?? '23:59');
         $horaB = (string) ($b['hora_inicio'] ?? '23:59');
@@ -1054,7 +1156,14 @@ require dirname(__DIR__) . '/includes/header.php';
                                 ? '<span class="muted">REGISTRO HISTÓRICO</span>'
                                 : badge_estado($row['estado']))) ?></td>
                     <td class="actions novelty-actions">
-                        <?php $viewKey = !empty($row['eliminada']) ? 'eliminada-' . (int) $row['id_novedad'] : (!empty($row['temporal']) ? 'temporal-' . $row['grupo_novedad'] : (string) ($row['grupo_novedad'] ?? $row['id_novedad'])); ?>
+                        <?php
+                        $grupoAccion = grupo_operacion_novedad($row);
+                        $viewKey = !empty($row['eliminada'])
+                            ? 'eliminada-' . (int) $row['id_novedad']
+                            : (!empty($row['temporal'])
+                                ? 'temporal-' . preg_replace('/[^a-zA-Z0-9_-]/', '-', (string) $row['grupo_novedad']) . '-' . preg_replace('/[^a-zA-Z0-9_-]/', '-', (string) ($row['id_grado'] ?? ''))
+                                : (preg_replace('/[^a-zA-Z0-9_-]/', '-', $grupoAccion) ?: 'novedad-' . (int) $row['id_novedad']));
+                        ?>
                         <?php if (!empty($row['eliminada'])): ?>
                             <button class="btn btn-sm btn-secondary" data-edit="tpl-view-<?= e($viewKey) ?>" data-title="Ver clase eliminada">Ver</button>
                             <form method="post" data-confirm="¿Eliminar este aviso temporal? La clase ya fue eliminada del horario y no se restaurará.">
@@ -1065,13 +1174,13 @@ require dirname(__DIR__) . '/includes/header.php';
                             </form>
                         <?php else: ?>
                         <button class="btn btn-sm btn-secondary" data-edit="tpl-view-<?= e($viewKey) ?>" data-title="Ver novedades">Ver</button>
-                        <?php if (empty($row['temporal']) && !in_array((string) ($row['estado'] ?? ''), ['HISTORICO', 'ARCHIVADO'], true)): ?>
+                        <?php if (empty($row['temporal']) && !in_array((string) ($row['estado'] ?? ''), ['HISTORICO', 'ARCHIVADO', 'ACTIVA'], true)): ?>
                             <form method="post">
                                 <?= csrf_field() ?>
                                 <input type="hidden" name="action" value="toggle">
                                 <input type="hidden" name="id_novedad" value="<?= (int) $row['id_novedad'] ?>">
-                                <?php if ($row['grupo_novedad'] !== null): ?><input type="hidden" name="grupo_novedad" value="<?= e($row['grupo_novedad']) ?>"><?php endif; ?>
-                                <button class="btn btn-sm btn-toggle <?= $row['estado'] === 'ACTIVA' ? 'is-active' : 'is-inactive' ?>" type="submit"><?= $row['estado'] === 'ACTIVA' ? 'Desactivar' : 'Activar' ?></button>
+                                <?php if ($grupoAccion !== ''): ?><input type="hidden" name="grupo_novedad" value="<?= e($grupoAccion) ?>"><?php endif; ?>
+                                <button class="btn btn-sm btn-toggle is-inactive" type="submit">Activar</button>
                             </form>
                         <?php endif; ?>
                         <form method="post" data-confirm="<?= e(!empty($row['bloque_agregado'])
@@ -1082,7 +1191,7 @@ require dirname(__DIR__) . '/includes/header.php';
                             <?= csrf_field() ?>
                             <input type="hidden" name="action" value="<?= !empty($row['temporal']) ? 'delete_temporary' : 'delete' ?>">
                             <input type="hidden" name="id_novedad" value="<?= (int) $row['id_novedad'] ?>">
-                            <?php if ($row['grupo_novedad'] !== null): ?><input type="hidden" name="grupo_novedad" value="<?= e($row['grupo_novedad']) ?>"><?php endif; ?>
+                            <?php if ($grupoAccion !== ''): ?><input type="hidden" name="grupo_novedad" value="<?= e($grupoAccion) ?>"><?php endif; ?>
                             <button class="btn btn-sm btn-danger" type="submit">Eliminar</button>
                         </form>
                         <?php endif; ?>
@@ -1144,10 +1253,8 @@ require dirname(__DIR__) . '/includes/header.php';
                     <form id="<?= e($observationsFormId) ?>" method="post" class="novelty-observations-form">
                         <?= csrf_field() ?>
                         <input type="hidden" name="action" value="update_observations">
-                        <?php if (!empty($row['grupo_novedad'])): ?>
-                            <input type="hidden" name="grupo_novedad" value="<?= e((string) $row['grupo_novedad']) ?>">
-                        <?php elseif (!empty($row['id_grado']) && !empty($row['fecha'])): ?>
-                            <input type="hidden" name="grupo_novedad" value="<?= e(grupo_novedad_para_grado_fecha((string) $row['id_grado'], (string) $row['fecha'])) ?>">
+                        <?php if ($grupoAccion !== ''): ?>
+                            <input type="hidden" name="grupo_novedad" value="<?= e($grupoAccion) ?>">
                         <?php endif; ?>
                         <section class="novelty-section">
                         <h3><?= count($row['clases_afectadas']) ?> registro(s)<?= count($gradosAfectados) === 1 ? ' · Grado ' . e((string) $gradosAfectados[0]) : '' ?> · <?= e((string) ($row['fecha'] ?? '')) ?: 'Histórico' ?><?= !empty($row['temporal']) ? ' · Temporal hasta ' . e($row['expira_en']) : '' ?></h3>
@@ -1186,10 +1293,7 @@ require dirname(__DIR__) . '/includes/header.php';
                                             $observationTemplateId = 'tpl-observation-' . (!empty($detalle['temporal'])
                                                 ? 'temporal-' . (int) $detalle['id_temporal']
                                                 : 'novelty-' . (int) $detalle['id_novedad']);
-                                            $grupoObservacion = (string) ($detalle['grupo_novedad'] ?? '');
-                                            if ($grupoObservacion === '' && !empty($detalle['id_grado']) && !empty($detalle['fecha'])) {
-                                                $grupoObservacion = grupo_novedad_para_grado_fecha((string) $detalle['id_grado'], (string) $detalle['fecha']);
-                                            }
+                                            $grupoObservacion = grupo_operacion_novedad($detalle);
                                             ?>
                                             <button class="btn btn-sm btn-secondary" type="button" data-edit="<?= e($observationTemplateId) ?>" data-title="Observación de la clase">Ver</button>
                                             <template id="<?= e($observationTemplateId) ?>">
@@ -1209,8 +1313,8 @@ require dirname(__DIR__) . '/includes/header.php';
                                             </template>
                                             <?php if (!empty($detalle['temporal'])): ?>
                                                 <form method="post" data-confirm="¿Eliminar este aviso temporal?"><?= csrf_field() ?><input type="hidden" name="action" value="delete_temporary"><input type="hidden" name="grupo_novedad" value="<?= e((string) $detalle['grupo_novedad']) ?>"><button class="btn btn-sm btn-danger" type="submit">Eliminar</button></form>
-                                            <?php elseif (!in_array((string) ($detalle['estado'] ?? ''), ['HISTORICO', 'ARCHIVADO'], true)): ?>
-                                                <form method="post" data-confirm="¿<?= ($detalle['estado'] ?? '') === 'ACTIVA' ? 'Desactivar' : 'Activar' ?> esta novedad?"><?= csrf_field() ?><input type="hidden" name="action" value="toggle"><input type="hidden" name="id_novedad" value="<?= (int) $detalle['id_novedad'] ?>"><button class="btn btn-sm btn-toggle <?= ($detalle['estado'] ?? '') === 'ACTIVA' ? 'is-active' : 'is-inactive' ?>" type="submit"><?= ($detalle['estado'] ?? '') === 'ACTIVA' ? 'Desactivar' : 'Activar' ?></button></form>
+                                            <?php elseif (!in_array((string) ($detalle['estado'] ?? ''), ['HISTORICO', 'ARCHIVADO', 'ACTIVA'], true)): ?>
+                                                <form method="post" data-confirm="¿Activar esta novedad?"><?= csrf_field() ?><input type="hidden" name="action" value="toggle"><input type="hidden" name="id_novedad" value="<?= (int) $detalle['id_novedad'] ?>"><button class="btn btn-sm btn-toggle is-inactive" type="submit">Activar</button></form>
                                                 <form method="post" data-confirm="¿Eliminar solo esta novedad?"><?= csrf_field() ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id_novedad" value="<?= (int) $detalle['id_novedad'] ?>"><button class="btn btn-sm btn-danger" type="submit">Eliminar</button></form>
                                             <?php else: ?>
                                                 <span class="muted">Solo consulta</span>

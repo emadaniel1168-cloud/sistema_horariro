@@ -828,6 +828,7 @@ $diasHorario = [];
 $diasHorarioTabla = [];
 $clasesProfesor = [];
 $cancelacionesNovedadProfesorPorHorario = [];
+$adicionesProfesor = [];
 $bloquesProfesor = [];
 $bloquesProfesorTabla = [];
 $gridProfesor = [];
@@ -981,6 +982,56 @@ if ($profesorHorarioId !== '') {
                     $fechaCancelacion->format('d/m/Y');
             }
         }
+        $condicionesAdicionesProfesor = [];
+        $parametrosAdicionesProfesor = [(int) $profesorHorario['id_profesor']];
+        foreach ($diasHorario as $diaHorario) {
+            $idDiaHorario = (int) $diaHorario['id_dia'];
+            $condicionesAdicionesProfesor[] = '(n.id_dia = ? AND n.fecha = ?)';
+            $parametrosAdicionesProfesor[] = $idDiaHorario;
+            $parametrosAdicionesProfesor[] = profesor_fecha_proxima_dia((int) $diaHorario['orden_dia']);
+        }
+        if ($condicionesAdicionesProfesor !== []) {
+            $adicionesProfesor = db_all(
+                "SELECT n.id_cambio AS id_novedad, n.id_grado, n.id_dia, n.id_bloque, n.fecha,
+                        n.nueva_materia AS id_materia, n.nuevo_profesor AS id_profesor,
+                        n.nuevo_salon AS id_salon, COALESCE(n.nuevo_estado, 'PROGRAMADA') AS estado,
+                        n.observacion AS observacion_novedad,
+                        TIME_FORMAT(COALESCE(n.nueva_hora_inicio, b.hora_inicio), '%H:%i') AS hora_inicio,
+                        TIME_FORMAT(COALESCE(n.nueva_hora_fin, b.hora_fin), '%H:%i') AS hora_fin,
+                        m.nombre AS materia, p.nombre_completo AS profesor, s.nombre AS salon
+                 FROM novedades_cambios_horario n
+                 JOIN grados g ON g.id_grado = n.id_grado AND g.activo = 1
+                 JOIN bloques_horarios b ON b.id_bloque = n.id_bloque
+                 JOIN materias m ON m.id_materia = n.nueva_materia
+                 LEFT JOIN profesores p ON p.id_profesor = n.nuevo_profesor
+                 LEFT JOIN salones s ON s.id_salon = n.nuevo_salon
+                 WHERE n.tipo_cambio = 'ADICION' AND n.estado = 'ACTIVA'
+                   AND COALESCE(n.nuevo_estado, 'PROGRAMADA') = 'PROGRAMADA'
+                   AND n.nuevo_profesor = ?
+                   AND (" . implode(' OR ', $condicionesAdicionesProfesor) . ")
+                 ORDER BY n.fecha, b.hora_inicio, n.id_grado",
+                $parametrosAdicionesProfesor
+            );
+            foreach ($adicionesProfesor as $adicionProfesor) {
+                $keyAdicionProfesor = (string) $adicionProfesor['hora_inicio'] . '|' . (string) $adicionProfesor['hora_fin'];
+                if (!isset($bloquesProfesor[$keyAdicionProfesor])) {
+                    $bloquesProfesor[$keyAdicionProfesor] = [
+                        'hora_inicio' => $adicionProfesor['hora_inicio'],
+                        'hora_fin' => $adicionProfesor['hora_fin'],
+                        'tipo' => 'CLASE',
+                    ];
+                }
+            }
+            uasort($bloquesProfesor, static function (array $a, array $b): int {
+                return [$a['hora_inicio'], $a['hora_fin']] <=> [$b['hora_inicio'], $b['hora_fin']];
+            });
+            $bloquesProfesorTabla = array_filter($bloquesProfesor, static function (array $bloque) use ($filtroHoraInicio, $filtroHoraFin): bool {
+                $horaInicio = format_time($bloque['hora_inicio']);
+                $horaFin = format_time($bloque['hora_fin']);
+                return (!$filtroHoraInicio || $horaFin > $filtroHoraInicio)
+                    && (!$filtroHoraFin || $horaInicio < $filtroHoraFin);
+            });
+        }
         $clasesOcultasProfesor = [];
         foreach ($clasesProfesor as $clase) {
             $key = $clase['hora_inicio'] . '|' . $clase['hora_fin'];
@@ -991,6 +1042,17 @@ if ($profesorHorarioId !== '') {
                 continue;
             }
             $gridProfesor[$key][(int) $clase['id_dia']][] = $clase;
+        }
+        foreach ($adicionesProfesor as $adicionProfesor) {
+            $key = (string) $adicionProfesor['hora_inicio'] . '|' . (string) $adicionProfesor['hora_fin'];
+            if ($soloLibres
+                || ($filtroMateria > 0 && (int) $adicionProfesor['id_materia'] !== $filtroMateria)
+                || ($filtroGrado !== '' && (string) $adicionProfesor['id_grado'] !== $filtroGrado)) {
+                $clasesOcultasProfesor[$key][(int) $adicionProfesor['id_dia']] = true;
+                continue;
+            }
+            $adicionProfesor['es_adicion'] = true;
+            $gridProfesor[$key][(int) $adicionProfesor['id_dia']][] = $adicionProfesor;
         }
     } else {
         $profesorHorarioId = '';
@@ -1126,13 +1188,27 @@ require dirname(__DIR__) . '/includes/header.php';
                                     <?php if ($clasesCelda): ?>
                                         <?php foreach ($clasesCelda as $clase): ?>
                                             <?php
-                                            $fechasCanceladas = $cancelacionesNovedadProfesorPorHorario[(int) $clase['id_horario']] ?? [];
-                                            $claseCanceladaPermanentemente = (string) $clase['estado'] === 'CANCELADA';
+                                            $esAdicionProfesor = !empty($clase['es_adicion']);
+                                            $fechasCanceladas = $esAdicionProfesor
+                                                ? []
+                                                : ($cancelacionesNovedadProfesorPorHorario[(int) $clase['id_horario']] ?? []);
+                                            $claseCanceladaPermanentemente = !$esAdicionProfesor
+                                                && (string) $clase['estado'] === 'CANCELADA';
                                             ?>
-                                            <div class="cell-class <?= $claseCanceladaPermanentemente ? 'is-cancelled' : '' ?>" data-edit="tpl-edit-class-<?= (int) $clase['id_horario'] ?>" data-title="Editar clase" role="button" tabindex="0">
+                                            <div class="cell-class <?= $esAdicionProfesor ? 'is-modified' : ($claseCanceladaPermanentemente ? 'is-cancelled' : '') ?>"
+                                                data-edit="<?= $esAdicionProfesor
+                                                    ? 'tpl-teacher-addition-' . (int) $clase['id_novedad']
+                                                    : 'tpl-edit-class-' . (int) $clase['id_horario'] ?>"
+                                                data-title="Editar clase" role="button" tabindex="0">
                                                 <strong><?= e($clase['id_grado']) ?></strong>
                                                 <small><?= e($clase['materia']) ?></small>
                                                 <small><?= e($clase['salon'] ?: 'Sin salón') ?></small>
+                                                <?php if ($esAdicionProfesor): ?>
+                                                    <?php
+                                                    $fechaAdicionProfesor = DateTimeImmutable::createFromFormat('!Y-m-d', (string) $clase['fecha']);
+                                                    ?>
+                                                    <small class="schedule-novelty-label">NOVEDAD<?= $fechaAdicionProfesor ? ' · ' . e($fechaAdicionProfesor->format('d/m/Y')) : '' ?></small>
+                                                <?php endif; ?>
                                                 <?php if ($claseCanceladaPermanentemente): ?>
                                                     <small class="schedule-novelty-label is-cancelled">¡Clase cancelada!</small>
                                                 <?php endif; ?>
@@ -1244,23 +1320,32 @@ require dirname(__DIR__) . '/includes/header.php';
 <?php foreach ($clasesProfesor as $clase): ?>
     <?php $claseIntermedia = profesor_clase_es_intermedia((int) $clase['id_horario']); ?>
     <template id="tpl-edit-class-<?= (int) $clase['id_horario'] ?>">
-        <form method="post" data-professor-delete-class data-middle-class="<?= $claseIntermedia ? 'true' : 'false' ?>" data-current-teacher="<?= (int) $clase['id_profesor'] ?>" data-confirm="¿Eliminar esta clase? También se quitará del horario del grado.">
+        <form method="post" data-professor-delete-class data-room-availability
+            data-middle-class="<?= $claseIntermedia ? 'true' : 'false' ?>"
+            data-current-teacher="<?= (int) $clase['id_profesor'] ?>"
+            data-availability-url="<?= e(APP_BASE) ?>/admin/horarios.php?api=salones"
+            data-confirm="¿Eliminar esta clase? También se quitará del horario del grado.">
             <?= csrf_field() ?>
             <input type="hidden" name="action" value="delete_class">
             <input type="hidden" name="id_profesor" value="<?= (int) $profesorHorario['id_profesor'] ?>">
             <input type="hidden" name="id_horario" value="<?= (int) $clase['id_horario'] ?>">
             <input type="hidden" name="horario_profesor" value="<?= (int) $profesorHorario['id_profesor'] ?>">
+            <input type="hidden" name="id_dia" value="<?= (int) $clase['id_dia'] ?>">
+            <input type="hidden" name="id_bloque" value="<?= (int) $clase['id_bloque'] ?>">
             <?php if ($claseIntermedia): ?>
                 <div class="field">
                     <label>Profesor para reemplazar esta clase</label>
                     <select name="profesor_reemplazo" data-professor-replacement>
                         <option value="">Elige un profesor</option>
-                        <?php foreach ($profesores as $profesorReemplazo): ?>
+                        <?php foreach ($profesoresHorario as $profesorReemplazo): ?>
                             <?php if ((int) $profesorReemplazo['id_profesor'] === (int) $clase['id_profesor']) continue; ?>
                             <option value="<?= (int) $profesorReemplazo['id_profesor'] ?>"><?= e($profesorReemplazo['nombre_completo']) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
+            <?php endif; ?>
+            <?php if ($claseIntermedia): ?>
+                <div class="availability-status muted" aria-live="polite">Consultando profesores libres para este horario...</div>
             <?php endif; ?>
             <button class="btn btn-danger" type="submit">Eliminar clase</button>
         </form>
@@ -1327,6 +1412,75 @@ require dirname(__DIR__) . '/includes/header.php';
                 </div>
             </div>
             <button class="btn btn-primary" type="submit">Guardar cambios</button>
+        </form>
+    </template>
+<?php endforeach; ?>
+<?php foreach ($adicionesProfesor as $adicionProfesor): ?>
+    <?php
+    $fechaAdicionProfesor = DateTimeImmutable::createFromFormat('!Y-m-d', (string) $adicionProfesor['fecha']);
+    if (!$fechaAdicionProfesor || $fechaAdicionProfesor->format('Y-m-d') !== (string) $adicionProfesor['fecha']) {
+        continue;
+    }
+    $observacionAdicionProfesor = '';
+    if (preg_match('/(?:^|\n)Observación:\s*(.*)$/su', (string) ($adicionProfesor['observacion_novedad'] ?? ''), $matches) === 1) {
+        $observacionAdicionProfesor = trim($matches[1]);
+    }
+    ?>
+    <template id="tpl-teacher-addition-<?= (int) $adicionProfesor['id_novedad'] ?>">
+        <form method="post" action="<?= e(APP_BASE) ?>/admin/horarios.php"
+            data-room-availability
+            data-availability-url="<?= e(APP_BASE) ?>/admin/horarios.php?api=salones">
+            <?= csrf_field() ?>
+            <input type="hidden" name="action" value="update_addition">
+            <input type="hidden" name="id_novedad" value="<?= (int) $adicionProfesor['id_novedad'] ?>">
+            <input type="hidden" name="id_grado" value="<?= e((string) $adicionProfesor['id_grado']) ?>">
+            <input type="hidden" name="id_dia" value="<?= (int) $adicionProfesor['id_dia'] ?>">
+            <input type="hidden" name="id_bloque" value="<?= (int) $adicionProfesor['id_bloque'] ?>">
+            <input type="hidden" name="fecha" value="<?= e((string) $adicionProfesor['fecha']) ?>">
+            <input type="hidden" name="horario_profesor" value="<?= (int) $profesorHorario['id_profesor'] ?>">
+            <input type="hidden" name="volver_a_profesor" value="1">
+            <input type="hidden" name="profesor_regreso" value="<?= (int) $profesorHorario['id_profesor'] ?>">
+            <div class="field">
+                <label>Fecha y horario</label>
+                <input value="<?= e($fechaAdicionProfesor->format('d/m/Y')) ?> · <?= e((string) $adicionProfesor['hora_inicio']) ?> - <?= e((string) $adicionProfesor['hora_fin']) ?>" disabled>
+            </div>
+            <div class="field">
+                <label>Grado</label>
+                <input value="<?= e((string) $adicionProfesor['id_grado']) ?>" disabled>
+            </div>
+            <div class="field">
+                <label>Materia</label>
+                <select name="id_materia" required>
+                    <?= options_html($materiasEdicion, 'id_materia', 'nombre', $adicionProfesor['id_materia'], false) ?>
+                </select>
+            </div>
+            <div class="field">
+                <label>Profesor</label>
+                <select name="id_profesor">
+                    <option value="">Sin profesor</option>
+                    <?= options_html($profesoresHorario, 'id_profesor', 'nombre_completo', $adicionProfesor['id_profesor'], false) ?>
+                </select>
+            </div>
+            <div class="field">
+                <label>Salón</label>
+                <select name="id_salon">
+                    <option value="">Sin salón</option>
+                    <?= options_html($salonesEdicion, 'id_salon', 'nombre', $adicionProfesor['id_salon'], false) ?>
+                </select>
+            </div>
+            <div class="availability-status muted" aria-live="polite">Consultando profesores y salones disponibles...</div>
+            <div class="field">
+                <label>Estado</label>
+                <select name="estado">
+                    <option value="PROGRAMADA" <?= $adicionProfesor['estado'] === 'PROGRAMADA' ? 'selected' : '' ?>>PROGRAMADA</option>
+                    <option value="CANCELADA" <?= $adicionProfesor['estado'] === 'CANCELADA' ? 'selected' : '' ?>>CANCELADA</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>Observación</label>
+                <textarea name="observacion" rows="4"><?= e($observacionAdicionProfesor) ?></textarea>
+            </div>
+            <button class="btn btn-primary" type="submit">Guardar novedad</button>
         </form>
     </template>
 <?php endforeach; ?>

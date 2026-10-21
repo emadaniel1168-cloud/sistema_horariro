@@ -24,6 +24,7 @@ $activeNoveltyCount = db_count("SELECT COUNT(*) AS total FROM (
     ) novedades_activas");
 $quickActions = [
     ['Crear o revisar horarios', 'horarios.php', '▦'],
+    ['Consultar salones', 'horario_salones.php', '▢'],
     ['Actualizar profesores', 'profesores.php', '♙'],
     ['Administrar grados', 'grados.php', '▤'],
     ['Administrar lugares', 'lugares.php', '⌖'],

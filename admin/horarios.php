@@ -13,6 +13,57 @@ asegurar_tabla_descansos_reemplazados();
 asegurar_tabla_descansos_por_dia();
 
 $sectionTitle = 'Horario semanal';
+
+function firmas_bloques_iguales_en_horario(string $idGrado, int $idBloqueA, int $idBloqueB): bool
+{
+    $firmas = [];
+    foreach ([$idBloqueA, $idBloqueB] as $idBloque) {
+        $bloque = db_one('SELECT tipo FROM bloques_horarios WHERE id_bloque = ?', [$idBloque]);
+        if (!$bloque) {
+            return false;
+        }
+
+        $filas = db_all(
+            'SELECT d.orden_dia, h.id_horario, h.id_materia, h.id_profesor, h.id_salon, h.estado, h.observacion,
+                    dp.id_bloque AS descanso_marcado
+             FROM dias_semana d
+             LEFT JOIN horario_semanal h
+               ON h.id_dia = d.id_dia AND h.id_grado = ? AND h.id_bloque = ?
+             LEFT JOIN descansos_por_dia dp
+               ON dp.id_grado = ? AND dp.id_dia = d.id_dia AND dp.id_bloque = ?
+             WHERE d.orden_dia BETWEEN 1 AND 5
+             ORDER BY d.orden_dia',
+            [$idGrado, $idBloque, $idGrado, $idBloque]
+        );
+        if (count($filas) !== 5) {
+            return false;
+        }
+
+        $firma = [];
+        foreach ($filas as $fila) {
+            if ($fila['descanso_marcado'] !== null
+                || ($fila['id_horario'] !== null && $fila['estado'] === 'DESCANSO')
+                || ($fila['id_horario'] === null && $bloque['tipo'] === 'DESCANSO')) {
+                $firma[] = ['DESCANSO'];
+            } elseif ($fila['id_horario'] === null) {
+                $firma[] = ['VACIO'];
+            } else {
+                $firma[] = [
+                    'CLASE',
+                    $fila['id_materia'],
+                    $fila['id_profesor'],
+                    $fila['id_salon'],
+                    $fila['estado'],
+                    $fila['observacion'],
+                ];
+            }
+        }
+        $firmas[] = $firma;
+    }
+
+    return $firmas[0] === $firmas[1];
+}
+
 if (get('api') === 'buscar-clase') {
     header('Content-Type: application/json; charset=utf-8');
     try {
@@ -155,7 +206,9 @@ if (get('api') === 'salones') {
     try {
         $fecha = get('fecha');
         $horarioId = (int) get('id_horario', '0');
+        $adicionId = (int) get('ignorar_adicion', '0');
         $ignorarHorario = (int) get('ignorar_horario', '0');
+        $bloqueId = (int) get('id_bloque', '0');
         $dia = (int) get('dia', '0');
         $horaInicio = get('hora_inicio');
         $horaFin = get('hora_fin');
@@ -174,10 +227,17 @@ if (get('api') === 'salones') {
                 $horaInicio = $claseBase['hora_inicio'] ?? null;
                 $horaFin = $claseBase['hora_fin'] ?? null;
             }
+            if ((!$horaInicio || !$horaFin) && $bloqueId) {
+                $bloqueBase = db_one(
+                    'SELECT hora_inicio, hora_fin FROM bloques_horarios WHERE id_bloque = ?',
+                    [$bloqueId]
+                );
+                $horaInicio = $bloqueBase['hora_inicio'] ?? null;
+                $horaFin = $bloqueBase['hora_fin'] ?? null;
+            }
             $ignorarHorario = $horarioId ?: $ignorarHorario;
         } else {
             $dia = $dia ?: (int) get('id_dia', '0');
-            $bloqueId = (int) get('id_bloque', '0');
             $bloqueBase = $bloqueId ? db_one('SELECT hora_inicio, hora_fin FROM bloques_horarios WHERE id_bloque = ? AND tipo = \'CLASE\'', [$bloqueId]) : null;
             $horaInicio = $bloqueBase['hora_inicio'] ?? null;
             $horaFin = $bloqueBase['hora_fin'] ?? null;
@@ -188,7 +248,14 @@ if (get('api') === 'salones') {
             throw new RuntimeException('Seleccione día y hora para consultar salones.');
         }
 
-        $ocupaciones = ocupaciones_horario($dia, $horaInicio, $horaFin, $fecha, $ignorarHorario ?: null);
+        $ocupaciones = ocupaciones_horario(
+            $dia,
+            $horaInicio,
+            $horaFin,
+            $fecha,
+            $ignorarHorario ?: null,
+            $adicionId ?: null
+        );
         $salones = db_all("SELECT id_salon, nombre FROM salones WHERE activo = 1 ORDER BY CASE WHEN nombre REGEXP '[0-9]+$' THEN 0 ELSE 1 END, CAST(SUBSTRING_INDEX(nombre, ' ', -1) AS UNSIGNED), nombre");
         $profesores = db_all('SELECT id_profesor, nombre_completo FROM profesores WHERE activo = 1 ORDER BY nombre_completo');
         $profesorId = (int) (get('id_profesor') ?: get('nuevo_profesor', '0'));
@@ -444,6 +511,16 @@ function restaurar_mapeo_bloques_al_calendario_base(string $idGrado, int $idCale
             'UPDATE novedades_cambios_horario SET id_bloque = ? WHERE id_grado = ? AND id_bloque = ?',
             [$idBloqueBase, $idGrado, $idBloqueActual]
         );
+        db_exec(
+            'INSERT IGNORE INTO descansos_por_dia (id_grado, id_dia, id_bloque)
+             SELECT id_grado, id_dia, ? FROM descansos_por_dia
+             WHERE id_grado = ? AND id_bloque = ?',
+            [$idBloqueBase, $idGrado, $idBloqueActual]
+        );
+        db_exec(
+            'DELETE FROM descansos_por_dia WHERE id_grado = ? AND id_bloque = ?',
+            [$idGrado, $idBloqueActual]
+        );
     }
 }
 
@@ -647,7 +724,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($operation === 'cancel_addition') {
         $action = 'cancel_addition';
     }
-    if ($action === 'update_addition' && post('estado') === 'DESCANSO') {
+    if ($action === 'update_addition'
+        && (post('estado') === 'DESCANSO'
+            || (post('estado') === 'CANCELADA' && post('edicion_desde_salon', '0') !== '1'))) {
         $action = 'cancel_addition';
     }
     if ($action === 'create' && (int) post('id_horario', '0') > 0) {
@@ -797,18 +876,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     && $descansoReemplazado['accion'] === 'PARCIAL'
                     ? (int) ($descansoReemplazado['id_bloque_descanso_restante'] ?? 0)
                     : 0;
-                $bloqueSiguiente = $bloqueEliminar['tipo'] === 'CLASE' ? db_one(
-                    "SELECT id_bloque, hora_inicio, hora_fin FROM bloques_horarios
-                     WHERE id_calendario = ? AND tipo = 'CLASE' AND hora_inicio = ? AND id_bloque <> ?
-                     ORDER BY hora_fin LIMIT 1 FOR UPDATE",
+                $bloqueSiguiente = db_one(
+                    'SELECT id_bloque, hora_inicio, hora_fin FROM bloques_horarios
+                     WHERE id_calendario = ? AND hora_inicio = ? AND id_bloque NOT IN (?, 24, 25)
+                     ORDER BY hora_fin LIMIT 1 FOR UPDATE',
                     [(int) $gradoEliminar['id_calendario'], $bloqueEliminar['hora_fin'], $idBloque]
-                ) : null;
-                $bloqueAnterior = $bloqueEliminar['tipo'] === 'CLASE' ? db_one(
-                    "SELECT id_bloque, hora_inicio, hora_fin FROM bloques_horarios
-                     WHERE id_calendario = ? AND tipo = 'CLASE' AND hora_fin = ? AND id_bloque <> ?
-                     ORDER BY hora_inicio DESC LIMIT 1 FOR UPDATE",
+                );
+                $bloqueAnterior = db_one(
+                    'SELECT id_bloque, hora_inicio, hora_fin FROM bloques_horarios
+                     WHERE id_calendario = ? AND hora_fin = ? AND id_bloque NOT IN (?, 24, 25)
+                     ORDER BY hora_inicio DESC LIMIT 1 FOR UPDATE',
                     [(int) $gradoEliminar['id_calendario'], $bloqueEliminar['hora_inicio'], $idBloque]
-                ) : null;
+                );
                 $clasesBloque = db_all(
                     'SELECT id_dia, id_materia, id_profesor, id_salon, estado, observacion
                      FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? AND estado <> \'DESCANSO\' ORDER BY id_dia',
@@ -827,61 +906,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        AND id_grado = ? AND id_bloque IN (?, ?)",
                     [$idGrado, $idBloque, $idBloqueDescansoRestante]
                 );
-                if ($clasesBloque !== [] || $clasesEnDescansoPartido > 0 || $adicionesActivasEnBloques > 0) {
+                if ($idBloqueDescansoRestante > 0
+                    && ($clasesBloque !== [] || $clasesEnDescansoPartido > 0 || $adicionesActivasEnBloques > 0)) {
                     throw new RuntimeException('No se puede unificar el descanso porque al menos uno de los bloques tiene una clase asignada o una clase adicional activa.');
                 }
-                $clasesSiguiente = $bloqueSiguiente ? db_all(
-                    'SELECT id_dia, id_materia, id_profesor, id_salon, estado, observacion
-                     FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? ORDER BY id_dia',
-                    [$idGrado, (int) $bloqueSiguiente['id_bloque']]
-                ) : [];
-                $clasesAnteriores = $bloqueAnterior ? db_all(
-                    'SELECT id_dia, id_materia, id_profesor, id_salon, estado, observacion
-                     FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? ORDER BY id_dia',
-                    [$idGrado, (int) $bloqueAnterior['id_bloque']]
-                ) : [];
-                $puedeRestaurarTramo = $bloqueSiguiente !== null && count($clasesBloque) === count($clasesSiguiente);
-                if ($puedeRestaurarTramo) {
-                    $clasesSiguientePorDia = [];
-                    foreach ($clasesSiguiente as $claseSiguiente) {
-                        $clasesSiguientePorDia[(int) $claseSiguiente['id_dia']] = $claseSiguiente;
-                    }
-                    foreach ($clasesBloque as $claseBloque) {
-                        $claseSiguiente = $clasesSiguientePorDia[(int) $claseBloque['id_dia']] ?? null;
-                        if (!$claseSiguiente) {
-                            $puedeRestaurarTramo = false;
-                            break;
-                        }
-                        foreach (['id_materia', 'id_profesor', 'id_salon', 'estado', 'observacion'] as $campo) {
-                            if ($claseBloque[$campo] !== $claseSiguiente[$campo]) {
-                                $puedeRestaurarTramo = false;
-                                break 2;
-                            }
-                        }
-                    }
-                }
+                $puedeRestaurarTramo = $bloqueSiguiente !== null
+                    && firmas_bloques_iguales_en_horario($idGrado, $idBloque, (int) $bloqueSiguiente['id_bloque']);
                 $puedeRestaurarTramoAnterior = $bloqueAnterior !== null
-                    && $clasesBloque !== []
-                    && count($clasesBloque) === count($clasesAnteriores);
-                if ($puedeRestaurarTramoAnterior) {
-                    $clasesAnterioresPorDia = [];
-                    foreach ($clasesAnteriores as $claseAnterior) {
-                        $clasesAnterioresPorDia[(int) $claseAnterior['id_dia']] = $claseAnterior;
-                    }
-                    foreach ($clasesBloque as $claseBloque) {
-                        $claseAnterior = $clasesAnterioresPorDia[(int) $claseBloque['id_dia']] ?? null;
-                        if (!$claseAnterior) {
-                            $puedeRestaurarTramoAnterior = false;
-                            break;
-                        }
-                        foreach (['id_materia', 'id_profesor', 'id_salon', 'estado', 'observacion'] as $campo) {
-                            if ($claseBloque[$campo] !== $claseAnterior[$campo]) {
-                                $puedeRestaurarTramoAnterior = false;
-                                break 2;
-                            }
-                        }
-                    }
-                }
+                    && firmas_bloques_iguales_en_horario($idGrado, $idBloque, (int) $bloqueAnterior['id_bloque']);
                 $idBloqueNovedadRelacionado = $idBloqueDescansoRestante > 0
                     ? $idBloqueDescansoRestante
                     : (int) ($bloqueSiguiente['id_bloque'] ?? 0);
@@ -915,7 +947,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new RuntimeException('No se puede quitar este bloque porque contiene clases distintas del tramo siguiente.');
                 }
                 $descansoReemplazadoSinClases = $descansoReemplazado && !$clasesBloque;
-                if ($bloqueSiguiente && !$puedeRestaurarTramo && !$puedeRestaurarTramoAnterior && $clasesSiguiente && !$descansoReemplazadoSinClases) {
+                if (($bloqueSiguiente || $bloqueAnterior)
+                    && !$puedeRestaurarTramo
+                    && !$puedeRestaurarTramoAnterior
+                    && !$descansoReemplazadoSinClases) {
                     throw new RuntimeException('No se puede quitar este bloque porque las clases de ambos tramos ya no coinciden.');
                 }
                 $esTramoDividido = $puedeRestaurarTramo || $puedeRestaurarTramoAnterior;
@@ -1531,6 +1566,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $backGrado = $idGrado;
         } elseif ($action === 'create_break_addition') {
             [$g, $dia, $bloque, $materia, $profesorId, $salonId, $estado, $observacion] = validate_horario(null, true, null, true);
+            $guardarPermanente = post('guardar_permanente', '0') === '1';
             $bloqueDescanso = db_one(
                 "SELECT b.id_bloque, b.tipo, b.id_calendario,
                         TIME_FORMAT(b.hora_inicio, '%H:%i') AS hora_inicio,
@@ -1543,6 +1579,149 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             );
             if (!$bloqueDescanso) {
                 throw new RuntimeException('El intervalo seleccionado ya no corresponde a un descanso del grado.');
+            }
+            if ($guardarPermanente) {
+                if ($estado !== 'PROGRAMADA') {
+                    throw new RuntimeException('Para convertir el descanso en clase, seleccione el estado PROGRAMADA.');
+                }
+                if (db_count(
+                    'SELECT COUNT(*) AS total FROM horario_semanal WHERE id_grado = ? AND id_dia = ? AND id_bloque = ?',
+                    [$g, $dia, $bloque]
+                ) > 0) {
+                    throw new RuntimeException('Ya existe un horario semanal para este grado, día y descanso.');
+                }
+
+                asegurar_tabla_cambios_horario();
+                db()->beginTransaction();
+                try {
+                    $idCalendarioActual = (int) $bloqueDescanso['id_calendario'];
+                    $gradosEnCalendario = db_count(
+                        'SELECT COUNT(*) AS total FROM grados WHERE id_calendario = ? AND activo = 1',
+                        [$idCalendarioActual]
+                    );
+                    if ($gradosEnCalendario > 1 || calendario_base_si_es_personalizado($g, $idCalendarioActual) === null) {
+                        $calendarioOrigen = db_one(
+                            'SELECT nombre, descripcion FROM calendarios WHERE id_calendario = ?',
+                            [$idCalendarioActual]
+                        );
+                        $nombreCalendario = trim((string) ($calendarioOrigen['nombre'] ?? '')) ?: 'Calendario';
+                        $descripcionCalendario = trim((string) ($calendarioOrigen['descripcion'] ?? '')) ?: 'Calendario exclusivo';
+                        $idCalendarioNuevo = crear_calendario($nombreCalendario . ' - ' . $g, $descripcionCalendario);
+                        $bloquesOrigen = db_all(
+                            'SELECT id_bloque, numero_bloque, tipo, hora_inicio, hora_fin, descripcion, agregado_desde_horario
+                             FROM bloques_horarios WHERE id_calendario = ? AND id_bloque NOT IN (24, 25)
+                             ORDER BY hora_inicio, hora_fin, numero_bloque',
+                            [$idCalendarioActual]
+                        );
+                        $mapaBloques = [];
+                        foreach ($bloquesOrigen as $bloqueOrigen) {
+                            db_exec(
+                                'INSERT INTO bloques_horarios
+                                    (id_calendario, numero_bloque, tipo, hora_inicio, hora_fin, descripcion, agregado_desde_horario)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)',
+                                [
+                                    $idCalendarioNuevo, $bloqueOrigen['numero_bloque'], $bloqueOrigen['tipo'],
+                                    $bloqueOrigen['hora_inicio'], $bloqueOrigen['hora_fin'], $bloqueOrigen['descripcion'],
+                                    $bloqueOrigen['agregado_desde_horario'],
+                                ]
+                            );
+                            $mapaBloques[(int) $bloqueOrigen['id_bloque']] = (int) db()->lastInsertId();
+                        }
+                        if (!isset($mapaBloques[$bloque])) {
+                            throw new RuntimeException('No se pudo personalizar el descanso para este grado.');
+                        }
+                        foreach ($mapaBloques as $bloqueOrigenId => $bloqueNuevoId) {
+                            db_exec(
+                                'UPDATE horario_semanal SET id_bloque = ? WHERE id_grado = ? AND id_bloque = ?',
+                                [$bloqueNuevoId, $g, $bloqueOrigenId]
+                            );
+                            db_exec(
+                                'UPDATE horario_original_novedad o
+                                 JOIN horario_semanal h ON h.id_horario = o.id_horario
+                                 SET o.id_bloque = ?
+                                 WHERE h.id_grado = ? AND h.id_bloque = ? AND o.id_bloque = ?',
+                                [$bloqueNuevoId, $g, $bloqueNuevoId, $bloqueOrigenId]
+                            );
+                            db_exec(
+                                'UPDATE novedades_cambios_horario SET id_bloque = ?
+                                 WHERE id_grado = ? AND id_bloque = ? AND estado = \'ACTIVA\'',
+                                [$bloqueNuevoId, $g, $bloqueOrigenId]
+                            );
+                            db_exec(
+                                'UPDATE descansos_por_dia SET id_bloque = ?
+                                 WHERE id_grado = ? AND id_bloque = ?',
+                                [$bloqueNuevoId, $g, $bloqueOrigenId]
+                            );
+                        }
+                        db_exec('UPDATE grados SET id_calendario = ? WHERE id_grado = ? AND activo = 1', [$idCalendarioNuevo, $g]);
+                        $idCalendarioActual = $idCalendarioNuevo;
+                        $bloque = $mapaBloques[$bloque];
+                    }
+
+                    if (db_count(
+                        'SELECT COUNT(*) AS total FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? AND id_dia <> ?',
+                        [$g, $bloque, $dia]
+                    ) > 0) {
+                        throw new RuntimeException('No se puede convertir el descanso porque ya hay clases semanales en otros días de ese intervalo.');
+                    }
+                    $numeroBloque = (int) db_one(
+                        'SELECT COALESCE(MAX(numero_bloque), 0) + 1 AS siguiente
+                         FROM bloques_horarios WHERE id_calendario = ? AND tipo = \'CLASE\'',
+                        [$idCalendarioActual]
+                    )['siguiente'];
+                    if (db_exec(
+                        'UPDATE bloques_horarios SET tipo = \'CLASE\', numero_bloque = ?
+                         WHERE id_bloque = ? AND id_calendario = ? AND tipo = \'DESCANSO\'',
+                        [$numeroBloque, $bloque, $idCalendarioActual]
+                    ) !== 1) {
+                        throw new RuntimeException('No se pudo convertir el descanso en un bloque de clase.');
+                    }
+                    foreach (range(1, 5) as $ordenDia) {
+                        if ($ordenDia === $dia) {
+                            continue;
+                        }
+                        if (db_count(
+                            'SELECT COUNT(*) AS total FROM horario_semanal h
+                             JOIN dias_semana d ON d.id_dia = h.id_dia
+                             WHERE h.id_grado = ? AND h.id_bloque = ? AND d.orden_dia = ?',
+                            [$g, $bloque, $ordenDia]
+                        ) > 0) {
+                            throw new RuntimeException('No se pudo conservar el descanso en los otros días porque ya hay una clase asignada.');
+                        }
+                        db_exec(
+                            'INSERT IGNORE INTO descansos_por_dia (id_grado, id_dia, id_bloque)
+                             SELECT ?, id_dia, ? FROM dias_semana WHERE orden_dia = ?',
+                            [$g, $bloque, $ordenDia]
+                        );
+                    }
+                    db_exec(
+                        'DELETE FROM descansos_por_dia WHERE id_grado = ? AND id_dia = ? AND id_bloque = ?',
+                        [$g, $dia, $bloque]
+                    );
+                    db_exec(
+                        'INSERT INTO horario_semanal (id_grado, id_dia, id_bloque, id_materia, id_profesor, id_salon, estado, observacion)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                        [$g, $dia, $bloque, $materia, $profesorId, $salonId, $estado, $observacion]
+                    );
+                    $idHorarioCreado = (int) db()->lastInsertId();
+                    registrar_cambio_horario($idHorarioCreado, 'CREACION', 'El descanso se convirtió permanentemente en clase para este día de la semana.');
+                    $resumenClase = resumen_clase_horario($idHorarioCreado);
+                    db_exec(
+                        'INSERT INTO novedades_temporales (grupo_novedad, id_horario, expira_en, observacion)
+                         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 20 SECOND), ?)',
+                        [bin2hex(random_bytes(16)), $idHorarioCreado, 'Se convirtió el descanso en clase: ' . $resumenClase]
+                    );
+                    reordenar_bloques_clase_calendario($idCalendarioActual);
+                    db()->commit();
+                } catch (Throwable $e) {
+                    if (db()->inTransaction()) {
+                        db()->rollBack();
+                    }
+                    throw $e;
+                }
+                flash_set('success', 'El descanso se convirtió en clase permanente para este grado y día de la semana; los demás grados conservaron su calendario.');
+                $backGrado = $g;
+                horario_redirect($backGrado);
             }
             $fecha = post('fecha');
             $grupoExistente = db_count(
@@ -1787,7 +1966,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (trim((string) $observacion) !== '') {
                 $observacionNovedad .= "\nObservación: " . trim((string) $observacion);
             }
-            if (post('guardar_permanente', '0') === '1') {
+            if (post('guardar_permanente', '0') === '1' && $estado === 'CANCELADA') {
+                db()->beginTransaction();
+                try {
+                    if (db_exec(
+                        "UPDATE novedades_cambios_horario
+                         SET estado = 'CANCELADA',
+                             observacion = CONCAT_WS(CHAR(10), NULLIF(observacion, ''), 'Clase cancelada permanentemente desde Salones.')
+                         WHERE id_cambio = ? AND tipo_cambio = 'ADICION' AND estado = 'ACTIVA'",
+                        [$idNovedad]
+                    ) !== 1) {
+                        throw new RuntimeException('La novedad ya no está activa para cancelar.');
+                    }
+                    db()->commit();
+                } catch (Throwable $e) {
+                    if (db()->inTransaction()) {
+                        db()->rollBack();
+                    }
+                    throw $e;
+                }
+                if (post('volver_a_salon', '0') === '1' && $salonId) {
+                    $fechaMarcaSalon = DateTimeImmutable::createFromFormat('!Y-m-d', (string) post('fecha'));
+                    if ($fechaMarcaSalon && $fechaMarcaSalon->format('Y-m-d') === (string) post('fecha')) {
+                        $_SESSION['salon_celda_eliminada_temporal'] = [
+                            'id_salon' => $salonId,
+                            'id_dia' => $dia,
+                            'fecha' => (string) post('fecha'),
+                            'hora_inicio' => format_time((string) $detalleClase['hora_inicio']),
+                            'hora_fin' => format_time((string) $detalleClase['hora_fin']),
+                            'expira_en' => time() + 20,
+                        ];
+                    }
+                }
+                flash_set('success', 'La clase se eliminó de la novedad. El espacio quedará resaltado en verde durante 20 segundos en Salones.');
+                $backGrado = $g;
+            } elseif (post('guardar_permanente', '0') === '1') {
                 db()->beginTransaction();
                 try {
                     db_exec(
@@ -1892,25 +2105,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('No se encontró la clase que desea editar.');
             }
             $resolucionCancelacion = post('resolucion_cancelacion', '');
-            if ($guardarPermanente && $estado === 'CANCELADA') {
-                $limitesJornada = db_one(
-                        'SELECT TIME_FORMAT(MIN(b.hora_inicio), \'%H:%i\') AS primera_hora,
-                            TIME_FORMAT(MAX(b.hora_inicio), \'%H:%i\') AS ultima_hora
-                     FROM horario_semanal h
-                     JOIN bloques_horarios b ON b.id_bloque = h.id_bloque
-                     WHERE h.id_grado = ? AND h.id_dia = ? AND h.id_horario <> ?
-                       AND h.estado = \'PROGRAMADA\'',
-                    [$g, $dia, $id]
-                );
-                $esClaseIntermedia = $limitesJornada
-                    && $limitesJornada['primera_hora'] !== null
-                    && $limitesJornada['ultima_hora'] !== null
-                    && $anterior['hora_inicio'] > $limitesJornada['primera_hora']
-                    && $anterior['hora_inicio'] < $limitesJornada['ultima_hora'];
-                if ($esClaseIntermedia) {
-                    throw new RuntimeException('Una clase intermedia debe reemplazarse por otro profesor o convertirse en descanso antes de guardarla permanentemente.');
-                }
-            }
             if ($resolucionCancelacion === 'profesor'
                 && (!$guardarPermanente || $estado !== 'PROGRAMADA' || !$profesorId
                     || (int) $profesorId === (int) ($anterior['id_profesor'] ?? 0))) {
@@ -1933,7 +2127,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 || (string) ($anterior['estado'] ?? '') !== (string) $estado
                 || (string) ($anterior['observacion'] ?? '') !== (string) ($observacion ?? '')
             );
-            $eliminarClaseCanceladaPermanentemente = $guardarPermanente && $estado === 'CANCELADA';
+            $eliminarClaseCanceladaPermanentemente = $guardarPermanente
+                && $estado === 'CANCELADA'
+                && post('conservar_cancelada', '0') !== '1';
             if ($cambiosBase) {
                 if ($guardarPermanente && !$eliminarClaseCanceladaPermanentemente) {
                     eliminar_horario_original_novedad($id);
@@ -2008,9 +2204,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($resolucionCancelacion === 'descanso' && $estadoCambio) {
                 $detallesNovedad[] = 'La casilla quedó como descanso.';
             }
-            $observacionNovedad = $estado === 'CANCELADA'
-                ? 'Clase cancelada desde el horario semanal.'
-                : implode("\n", $detallesNovedad);
+            $descansoNormalRestaurado = false;
+            $observacionNovedad = implode("\n", $detallesNovedad);
+            if ($estado === 'CANCELADA' && $observacionNovedad === '') {
+                $observacionNovedad = 'Clase cancelada desde el horario semanal.';
+            }
             asegurar_esquema_novedades();
             asegurar_tabla_cambios_horario();
             db()->beginTransaction();
@@ -2055,12 +2253,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         registrar_novedad_cancelacion_horario(
                             $id,
                             $grupoNovedad,
-                            'Clase cancelada desde el horario semanal.',
+                            $observacionNovedad,
                             $fechaNovedad
                         );
                     }
                     if (!$eliminarClaseCanceladaPermanentemente) {
-                        registrar_cambio_horario($id, 'CAMBIO', 'Cambios permanentes guardados desde el horario semanal.');
+                        registrar_cambio_horario(
+                            $id,
+                            'CAMBIO',
+                            'Cambios permanentes guardados desde el horario semanal: ' .
+                                implode('; ', $detallesNovedad)
+                        );
                     }
                 } elseif ($hayCambios) {
                     db_exec('DELETE FROM novedades_temporales WHERE id_horario = ?', [$id]);
@@ -2112,6 +2315,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         [$id]
                     );
                 }
+                if ($guardarPermanente && $estado === 'DESCANSO' && !$eliminarClaseCanceladaPermanentemente) {
+                    $calendarioGrado = db_one(
+                        'SELECT id_calendario FROM grados WHERE id_grado = ? AND activo = 1 FOR UPDATE',
+                        [$g]
+                    );
+                    $idCalendarioActual = (int) ($calendarioGrado['id_calendario'] ?? 0);
+                    $idCalendarioBase = $idCalendarioActual > 0
+                        ? calendario_base_si_es_personalizado($g, $idCalendarioActual)
+                        : null;
+                    $bloqueActual = db_one(
+                        "SELECT id_calendario, tipo,
+                                TIME_FORMAT(hora_inicio, '%H:%i') AS hora_inicio,
+                                TIME_FORMAT(hora_fin, '%H:%i') AS hora_fin
+                         FROM bloques_horarios WHERE id_bloque = ? FOR UPDATE",
+                        [$bloque]
+                    );
+                    $bloqueBaseDescanso = $idCalendarioBase !== null && $bloqueActual
+                        ? db_one(
+                            "SELECT id_bloque FROM bloques_horarios
+                             WHERE id_calendario = ? AND tipo = 'DESCANSO'
+                               AND hora_inicio = ? AND hora_fin = ? LIMIT 1",
+                            [$idCalendarioBase, $bloqueActual['hora_inicio'], $bloqueActual['hora_fin']]
+                        )
+                        : null;
+                    $calendarioExclusivo = $idCalendarioActual > 0
+                        && db_count(
+                            'SELECT COUNT(*) AS total FROM grados WHERE id_calendario = ? AND activo = 1',
+                            [$idCalendarioActual]
+                        ) === 1;
+                    $clasesRestantes = $bloqueActual
+                        ? db_count(
+                            "SELECT COUNT(*) AS total FROM horario_semanal
+                             WHERE id_grado = ? AND id_bloque = ? AND COALESCE(estado, '') <> 'DESCANSO'",
+                            [$g, $bloque]
+                        )
+                        : 0;
+                    $novedadesActivasEnBloque = $bloqueActual
+                        ? db_count(
+                            "SELECT COUNT(*) AS total FROM novedades_cambios_horario n
+                             LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                             WHERE n.estado = 'ACTIVA' AND (
+                                 (n.id_grado = ? AND n.id_bloque = ?)
+                                 OR (h.id_grado = ? AND h.id_bloque = ?)
+                             )",
+                            [$g, $bloque, $g, $bloque]
+                        )
+                        : 0;
+                    if ($calendarioExclusivo && $bloqueActual
+                        && (int) $bloqueActual['id_calendario'] === $idCalendarioActual
+                        && $bloqueActual['tipo'] === 'CLASE'
+                        && $idCalendarioBase !== null && $bloqueBaseDescanso && $clasesRestantes === 0
+                        && $novedadesActivasEnBloque === 0) {
+                        db_exec(
+                            "UPDATE bloques_horarios SET tipo = 'DESCANSO', numero_bloque = NULL
+                             WHERE id_bloque = ? AND id_calendario = ?",
+                            [$bloque, $idCalendarioActual]
+                        );
+                        db_exec(
+                            'DELETE FROM horario_semanal
+                             WHERE id_grado = ? AND id_bloque = ? AND estado = \'DESCANSO\'',
+                            [$g, $bloque]
+                        );
+                        db_exec(
+                            'DELETE FROM descansos_por_dia WHERE id_grado = ? AND id_bloque = ?',
+                            [$g, $bloque]
+                        );
+                        reordenar_bloques_clase_calendario($idCalendarioActual);
+                        if (calendario_personalizado_es_redundante($g, $idCalendarioActual)) {
+                            restaurar_mapeo_bloques_al_calendario_base($g, $idCalendarioActual, $idCalendarioBase);
+                            eliminar_calendario_personalizado_si_es_redundante($g, $idCalendarioActual);
+                        }
+                        $descansoNormalRestaurado = true;
+                    }
+                }
                 db()->commit();
             } catch (Throwable $e) {
                 if (db()->inTransaction()) {
@@ -2126,12 +2403,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'id_bloque' => (int) $anterior['id_bloque'],
                     'expira_en' => time() + 20,
                 ];
+                if (post('volver_a_salon', '0') === '1' && !empty($anterior['id_salon'])) {
+                    $fechaMarcaSalon = DateTimeImmutable::createFromFormat('!Y-m-d', (string) $fechaNovedad);
+                    if ($fechaMarcaSalon && $fechaMarcaSalon->format('Y-m-d') === (string) $fechaNovedad) {
+                        $_SESSION['salon_celda_eliminada_temporal'] = [
+                            'id_salon' => (int) $anterior['id_salon'],
+                            'id_dia' => (int) $anterior['id_dia'],
+                            'fecha' => (string) $fechaNovedad,
+                            'hora_inicio' => format_time((string) $anterior['hora_inicio']),
+                            'hora_fin' => format_time((string) $anterior['hora_fin']),
+                            'expira_en' => time() + 20,
+                        ];
+                    }
+                }
             }
             $restauradoAlOriginal = $novedadesExistentes && !$hayCambios;
             flash_set('success', $guardarPermanente && $hayCambios
                 ? ($eliminarClaseCanceladaPermanentemente
-                    ? 'La clase fue eliminada permanentemente del horario semanal.'
-                    : 'Cambios guardados permanentemente en el horario semanal. Se resaltarán durante 20 segundos.')
+                    ? (post('volver_a_salon', '0') === '1'
+                        ? 'La clase se eliminó del horario semanal. El espacio quedará resaltado en verde durante 20 segundos en Salones.'
+                        : 'La clase fue eliminada permanentemente del horario semanal.')
+                    : ($descansoNormalRestaurado
+                        ? 'Se restauró el descanso normal y se eliminaron sus excepciones por día.'
+                        : 'Cambios guardados permanentemente en el horario semanal. Se resaltarán durante 20 segundos.'))
                 : ($hayCambios
                 ? 'Novedad registrada para ' . $fechaNovedad . '. El horario semanal original no fue modificado.'
                 : ($restauradoAlOriginal || post('restaurar_original', '0') === '1'
@@ -2155,6 +2449,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         flash_set($esOcupado || $esCruceBloque ? 'occupied' : 'error', $esOcupado && !str_starts_with($mensaje, 'Esa hora ya está ocupada')
             ? 'Esa hora ya está ocupada. ' . $mensaje
             : $mensaje);
+    }
+    if (post('volver_a_salon', '0') === '1') {
+        $salonRegreso = (int) post('salon_regreso', '0');
+        $fechaRegreso = post('fecha');
+        $fechaRegresoValida = DateTimeImmutable::createFromFormat('!Y-m-d', $fechaRegreso);
+        if ($salonRegreso > 0 && $fechaRegresoValida && $fechaRegresoValida->format('Y-m-d') === $fechaRegreso) {
+            redirect(APP_BASE . '/admin/horario_salones.php?salon=' . $salonRegreso . '&fecha=' . urlencode($fechaRegreso));
+        }
+    }
+    if (post('volver_a_profesor', '0') === '1') {
+        $profesorRegreso = (int) post('profesor_regreso', '0');
+        if ($profesorRegreso > 0) {
+            redirect(APP_BASE . '/admin/profesores.php?horario_profesor=' . $profesorRegreso);
+        }
     }
     horario_redirect($backGrado);
 }
@@ -2740,7 +3048,7 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                                         || !empty($novedad['cambio_hora'])
                                     );
                                     $isNovedad = $novedad !== null && $hayCambioRealNovedad;
-                                    $esTemporal = $isNovedad && !empty($novedad['temporal']);
+                                    $esTemporal = !empty($novedad['temporal']);
                                     $esCancelada = $estadoVisible === 'CANCELADA'
                                         || ($novedad && ($novedad['estado'] ?? '') === 'ACTIVA'
                                             && preg_match('/clase cancelada/i', (string) ($novedad['observacion'] ?? '')) === 1);
@@ -2753,7 +3061,7 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                                     $esCanceladaPendiente = $esCancelada
                                         && strpos($observacionVisible, 'Cancelación consecutiva pendiente de decisión') !== false;
                                     ?>
-                                    <div class="cell-class <?= $esCancelada ? 'is-cancelled' : ($esTemporal ? 'is-temporary' : ($isNovedad ? 'is-modified' : '')) ?><?= $esCanceladaIntermedia ? ' is-midday-cancelled' : '' ?><?= $esCanceladaPendiente ? ' is-sequence-cancelled' : '' ?>" <?= $esTemporal ? 'data-expire-at="' . (int) $novedad['expira_timestamp'] * 1000 . '"' : '' ?> data-edit="<?= $esAdicionActiva ? 'tpl-addition-' . (int) $novedad['id_novedad'] : 'tpl-edit-' . (int) ($cell['id_horario'] ?? 0) ?>" data-title="<?= $esAdicionActiva ? 'Nueva clase' : 'Editar clase' ?>" role="button">
+                                    <div class="cell-class <?= $esTemporal ? 'is-temporary' : ($esCancelada ? 'is-cancelled' : ($isNovedad ? 'is-modified' : '')) ?><?= $esCanceladaIntermedia ? ' is-midday-cancelled' : '' ?><?= $esCanceladaPendiente ? ' is-sequence-cancelled' : '' ?>" <?= $esTemporal ? 'data-expire-at="' . (int) $novedad['expira_timestamp'] * 1000 . '"' : '' ?> data-edit="<?= $esAdicionActiva ? 'tpl-addition-' . (int) $novedad['id_novedad'] : 'tpl-edit-' . (int) ($cell['id_horario'] ?? 0) ?>" data-title="<?= $esAdicionActiva ? 'Nueva clase' : 'Editar clase' ?>" role="button">
                                         <?php if ($esCancelada): ?>
                                             <strong><?= e($materiaVisible) ?></strong>
                                             <small><?= e($profesorVisible ?: 'Sin profesor') ?></small>
@@ -2783,16 +3091,16 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                             <?php $bloqueTieneClases = isset($bloquesConClases[(int) $bloque['id_bloque']]); ?>
                             <?php $bloqueEsDescansoPartido = isset($bloquesDescansoPartidos[(int) $bloque['id_bloque']]); ?>
                             <?php $confirmacionQuitarBloque = $bloqueEsDescansoPartido
-                                ? '¿Unificar el descanso y quitar este bloque vacío? Solo se puede si ambos tramos no tienen clases ni novedades activas.'
-                                : '¿Quitar ' . $etiquetaBloqueAgregado . '? Solo se pueden quitar bloques sin clases asignadas ni novedades de clase activas.'; ?>
+                                ? '¿Unificar el descanso y quitar este bloque? No debe haber clases adicionales ni novedades activas.'
+                                : '¿Quitar ' . $etiquetaBloqueAgregado . '? Si tiene clases, solo se unificará cuando coincidan en los cinco días con el bloque contiguo.'; ?>
                             <form method="post" data-confirm="<?= e($confirmacionQuitarBloque) ?>">
                                 <?= csrf_field() ?>
                                 <input type="hidden" name="action" value="delete_calendar_block">
                                 <input type="hidden" name="id_grado" value="<?= e($grado) ?>">
                                 <input type="hidden" name="id_bloque" value="<?= (int) $bloque['id_bloque'] ?>">
                                 <button class="btn btn-sm btn-danger schedule-inline-action schedule-remove-action" type="submit"
-                                    <?= $bloqueTieneClases ? 'disabled title="No se puede quitar: el bloque tiene una clase asignada."' : 'title="Quitar ' . e($etiquetaBloqueAgregado) . '"' ?>
-                                    aria-label="<?= $bloqueTieneClases ? 'No se puede quitar el bloque porque tiene una clase asignada' : 'Quitar ' . e($etiquetaBloqueAgregado) ?>">-</button>
+                                    title="<?= $bloqueTieneClases ? 'Unificar solo si las clases coinciden en los cinco días' : 'Quitar ' . e($etiquetaBloqueAgregado) ?>"
+                                    aria-label="<?= $bloqueTieneClases ? 'Unificar el bloque si las clases coinciden en los cinco días' : 'Quitar ' . e($etiquetaBloqueAgregado) ?>">-</button>
                             </form>
                         <?php else: ?>
                             <button class="btn btn-sm btn-danger schedule-inline-action schedule-remove-action" type="button" disabled title="Solo se pueden quitar bloques agregados" aria-label="El bloque <?= (int) $bloque['numero_bloque'] ?> no se puede quitar">-</button>

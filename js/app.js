@@ -768,7 +768,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const updateRoomAvailability = async (form) => {
         const status = form.querySelector('.availability-status');
         const roomSelect = form.querySelector('select[name="id_salon"], select[name="nuevo_salon"]');
-        if (!status || !roomSelect) return;
+        const teacherSelect = form.querySelector('select[name="profesor_reemplazo"], select[name="nuevo_profesor"], select[name="id_profesor"]');
+        if (!status || (!roomSelect && !teacherSelect)) return;
 
         const params = new URLSearchParams();
         const noveltyType = form.querySelector('[name="tipo_novedad"]');
@@ -798,7 +799,13 @@ document.addEventListener('DOMContentLoaded', () => {
             params.set('dia', day);
             params.set('id_bloque', block);
             params.set('id_horario', form.querySelector('[name="id_horario"]')?.value || '');
-            const teacher = form.querySelector('[name="id_profesor"]')?.value || form.querySelector('[name="nuevo_profesor"]')?.value;
+            const date = form.querySelector('[name="fecha"]')?.value;
+            if (date) params.set('fecha', date);
+            const additionId = form.querySelector('[name="id_novedad"]')?.value;
+            if (additionId) params.set('ignorar_adicion', additionId);
+            const teacher = form.querySelector('[name="profesor_reemplazo"]')?.value
+                || form.querySelector('[name="nuevo_profesor"]')?.value
+                || form.querySelector('[name="id_profesor"]')?.value;
             if (teacher) params.set('id_profesor', teacher);
         }
 
@@ -808,26 +815,236 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || 'No se pudo consultar la disponibilidad.');
 
-            const available = result.salones.filter((room) => room.disponible);
-            const roomById = new Map(result.salones.map((room) => [String(room.id), room]));
-            for (const option of roomSelect.options) {
-                if (!option.value) continue;
-                const room = roomById.get(option.value);
-                if (!room) continue;
-                option.dataset.roomName ||= room.nombre;
-                option.disabled = !room.disponible && option.value !== roomSelect.value;
-                option.textContent = `${option.dataset.roomName} · ${room.disponible ? 'Libre' : 'Ocupado'}`;
+            const availableRooms = result.salones.filter((room) => room.disponible);
+            if (roomSelect) {
+                const roomById = new Map(result.salones.map((room) => [String(room.id), room]));
+                for (const option of roomSelect.options) {
+                    if (!option.value) continue;
+                    const room = roomById.get(option.value);
+                    if (!room) continue;
+                    option.dataset.roomName ||= room.nombre;
+                    option.disabled = !room.disponible && option.value !== roomSelect.value;
+                    option.textContent = `${option.dataset.roomName} · ${room.disponible ? 'Libre' : 'Ocupado'}`;
+                }
             }
 
-            const messages = [available.length
-                ? `${available.length} salones libres para este bloque.`
-                : 'No hay salones libres para este bloque.'];
+            const availableTeachers = result.profesores.filter((teacher) => teacher.disponible);
+            const teachersById = new Map(result.profesores.map((teacher) => [String(teacher.id), teacher]));
+            if (teacherSelect) {
+                for (const option of teacherSelect.options) {
+                    if (!option.value) continue;
+                    const teacher = teachersById.get(option.value);
+                    if (!teacher) continue;
+                    option.dataset.teacherName ||= option.textContent.replace(/\s+·\s+(Disponible|Ocupado.*)$/, '');
+                    option.disabled = !teacher.disponible && option.value !== teacherSelect.value;
+                    option.hidden = !teacher.disponible && option.value !== teacherSelect.value;
+                    option.textContent = teacher.disponible
+                        ? `${option.dataset.teacherName} · Disponible`
+                        : `${option.dataset.teacherName} · Ocupado${teacher.conflicto ? ` (${teacher.conflicto})` : ''}`;
+                }
+                teacherSelect._syncSearchableSelect?.();
+            }
+
+            const messages = [
+                ...(roomSelect ? [availableRooms.length
+                    ? `${availableRooms.length} salones libres para este bloque.`
+                    : 'No hay salones libres para este bloque.'] : []),
+                ...(teacherSelect ? [`${availableTeachers.length} profesor(es) disponible(s) para reemplazar en este horario.`] : []),
+            ];
             if (result.conflicto_profesor) messages.push(result.conflicto_profesor);
             status.textContent = messages.join(' ');
-            status.dataset.state = available.length ? 'available' : 'unavailable';
+            status.dataset.state = (!roomSelect || availableRooms.length) && (!teacherSelect || availableTeachers.length)
+                ? 'available'
+                : 'unavailable';
         } catch (error) {
             status.textContent = error.message;
             status.dataset.state = 'unavailable';
+        }
+    };
+
+    const setupRoomCreateEditor = (form) => {
+        const gradeSelect = form.querySelector('[name="id_grado"]');
+        const blockInput = form.querySelector('[name="id_bloque"]');
+        const teacherSelect = form.querySelector('[name="id_profesor"]');
+        const subjectSelect = form.querySelector('[name="id_materia"]');
+        const status = form.querySelector('[data-room-create-status]');
+        if (!gradeSelect || !blockInput || !teacherSelect || !subjectSelect || !status) return;
+
+        const teacherOptions = Array.from(teacherSelect.options).filter((option) => option.value);
+        let requestVersion = 0;
+        teacherOptions.forEach((option) => {
+            option.hidden = true;
+            option.disabled = true;
+        });
+
+        const selectMostUsedSubject = () => {
+            const teacherOption = teacherSelect.selectedOptions[0];
+            if (!teacherOption?.value) return;
+            const counts = new Map((teacherOption.dataset.subjectCounts || '')
+                .split(',')
+                .filter(Boolean)
+                .map((item) => item.split(':'))
+                .map(([id, count]) => [id, Number(count)]));
+            const subjects = new Set((teacherOption.dataset.subjects || '').split(',').filter(Boolean));
+            const permanentSubjects = new Set((teacherOption.dataset.permanentSubjects || '').split(',').filter(Boolean));
+            const candidates = Array.from(subjectSelect.options)
+                .filter((option) => option.value && subjects.has(option.value))
+                .map((option, order) => ({
+                    id: option.value,
+                    order,
+                    count: counts.get(option.value) || 0,
+                    permanent: permanentSubjects.has(option.value),
+                }));
+            if (!candidates.length) {
+                subjectSelect.value = '';
+                status.textContent = 'El profesor seleccionado no tiene materias asignadas en su horario. Elija otro profesor.';
+                return;
+            }
+            candidates.sort((first, second) =>
+                second.count - first.count
+                || Number(second.permanent) - Number(first.permanent)
+                || first.order - second.order
+            );
+            subjectSelect.value = candidates[0].id;
+            subjectSelect.dispatchEvent(new Event('change', {bubbles: true}));
+        };
+
+        const loadAvailableTeachers = async () => {
+            const gradeOption = gradeSelect.selectedOptions[0];
+            blockInput.value = gradeOption?.dataset.blockId || '';
+            teacherSelect.value = '';
+            subjectSelect.value = '';
+            teacherOptions.forEach((option) => {
+                option.hidden = true;
+                option.disabled = true;
+            });
+            if (!gradeSelect.value || !blockInput.value) {
+                status.textContent = 'Seleccione grado para cargar profesores disponibles en este horario.';
+                return;
+            }
+
+            const version = ++requestVersion;
+            status.textContent = 'Consultando profesores disponibles para esta hora...';
+            const params = new URLSearchParams({
+                fecha: form.dataset.availabilityDate || '',
+                dia: form.dataset.availabilityDay || '',
+                id_bloque: blockInput.value,
+            });
+            try {
+                const response = await fetch(`${form.dataset.availabilityUrl}&${params.toString()}`);
+                const data = await response.json();
+                if (version !== requestVersion) return;
+                if (!response.ok) throw new Error(data.error || 'No se pudo consultar la disponibilidad de profesores.');
+
+                const availableIds = new Set(
+                    data.profesores.filter((profesor) => profesor.disponible).map((profesor) => String(profesor.id))
+                );
+                teacherOptions.forEach((option) => {
+                    const available = availableIds.has(option.value);
+                    option.hidden = !available;
+                    option.disabled = !available;
+                });
+                const count = availableIds.size;
+                status.textContent = count
+                    ? `${count} profesor(es) disponible(s) para este grado, día y horario.`
+                    : 'No hay profesores disponibles para este horario.';
+            } catch (error) {
+                if (version !== requestVersion) return;
+                status.textContent = error.message || 'No se pudo consultar la disponibilidad de profesores.';
+            }
+        };
+
+        gradeSelect.addEventListener('change', loadAvailableTeachers);
+        teacherSelect.addEventListener('change', selectMostUsedSubject);
+    };
+
+    const setupRoomClassEditor = async (form) => {
+        const status = form.querySelector('[data-room-availability-status]');
+        const teacherSelect = form.querySelector('[name="id_profesor"]');
+        const subjectSelect = form.querySelector('[name="id_materia"]');
+        const selectMostUsedSubject = () => {
+            const teacherOption = teacherSelect?.selectedOptions[0];
+            if (!teacherOption?.value || !subjectSelect) return;
+            const taughtCounts = new Map(
+                (teacherOption.dataset.subjectCounts || '')
+                    .split(',')
+                    .filter(Boolean)
+                    .map((item) => item.split(':'))
+                    .map(([id, count]) => [id, Number(count)])
+            );
+            const taughtSubjects = new Set((teacherOption.dataset.subjects || '').split(',').filter(Boolean));
+            const permanentSubjects = new Set((teacherOption.dataset.permanentSubjects || '').split(',').filter(Boolean));
+            const candidates = Array.from(subjectSelect.options)
+                .filter((option) => option.value && taughtSubjects.has(option.value))
+                .map((option, order) => ({
+                    id: option.value,
+                    order,
+                    count: taughtCounts.get(option.value) || 0,
+                    permanent: permanentSubjects.has(option.value),
+                }));
+            if (!candidates.length) return;
+            candidates.sort((first, second) =>
+                second.count - first.count
+                || Number(second.permanent) - Number(first.permanent)
+                || first.order - second.order
+            );
+            subjectSelect.value = candidates[0].id;
+            subjectSelect.dispatchEvent(new Event('change', {bubbles: true}));
+        };
+        teacherSelect?.addEventListener('change', selectMostUsedSubject);
+        if (teacherSelect?.value && !subjectSelect?.value) selectMostUsedSubject();
+        const params = new URLSearchParams({
+            fecha: form.dataset.availabilityDate || '',
+            dia: form.dataset.availabilityDay || '',
+            hora_inicio: form.dataset.availabilityStart || '',
+            hora_fin: form.dataset.availabilityEnd || '',
+            id_horario: form.querySelector('[name="id_horario"]')?.value || '',
+            ignorar_adicion: form.dataset.availabilityAddition || '',
+        });
+
+        try {
+            const response = await fetch(`${form.dataset.availabilityUrl}&${params.toString()}`);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'No se pudo consultar la disponibilidad.');
+
+            const unavailableResources = [];
+            [
+                ['id_profesor', data.profesores, 'profesor'],
+            ].forEach(([fieldName, resources, label]) => {
+                const select = form.querySelector(`[name="${fieldName}"]`);
+                if (!select) return;
+                const availability = new Map(resources.map((resource) => [String(resource.id), resource]));
+                const currentValue = select.value;
+                Array.from(select.options).forEach((option) => {
+                    if (!option.value) return;
+                    const resource = availability.get(option.value);
+                    const available = resource?.disponible === true;
+                    if (fieldName === 'id_profesor') {
+                        option.hidden = !available;
+                        option.disabled = !available;
+                        option.dataset.teacherName ||= option.textContent.trim().replace(/\s+·\s+(Disponible|Ocupado.*|No disponible)$/, '');
+                        option.textContent = `${option.dataset.teacherName} · Disponible`;
+                    } else {
+                        option.hidden = !available;
+                        option.disabled = !available;
+                    }
+                    if (option.value === currentValue && !available) {
+                        unavailableResources.push(`${label}: ${resource?.conflicto || 'recurso inactivo o no disponible'}`);
+                    }
+                });
+                if (currentValue && !availability.get(currentValue)?.disponible) {
+                    select.value = '';
+                }
+                select._syncSearchableSelect?.();
+            });
+
+            if (status) {
+                status.textContent = unavailableResources.length
+                    ? `El docente asignado no está disponible (${unavailableResources.join('; ')}). Elija uno de los ${data.profesores.filter((item) => item.disponible).length} docentes disponibles que aparecen en la lista.`
+                    : `Se muestran ${data.profesores.filter((item) => item.disponible).length} docentes disponibles para este horario.`;
+            }
+        } catch (error) {
+            if (status) status.textContent = error.message || 'No se pudo consultar la disponibilidad.';
         }
     };
 
@@ -929,7 +1146,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const placeholder = Array.from(select.options).find((option) => !option.value)?.cloneNode(true);
             const groups = [[], [], []];
             for (const option of options) {
-                if (select === teacherSelect && !availableTeachers.has(option.value)) continue;
+                if (select === teacherSelect && !availableTeachers.has(option.value)) {
+                    if (option.value === selectedValue) {
+                        const unavailableOption = option.cloneNode(true);
+                        const teacherName = unavailableOption.dataset.teacherName || unavailableOption.textContent.trim();
+                        unavailableOption.textContent = `${teacherName} · No disponible (se conserva)`;
+                        unavailableOption.disabled = true;
+                        groups[2].push(unavailableOption);
+                    }
+                    continue;
+                }
                 const hasRoom = roomId && (option.dataset.rooms || '').split(',').includes(roomId);
                 const hasRelation = relatedId && (option.dataset[relationKey] || '').split(',').includes(relatedId);
                 if (hasRoom) groups[0].push(option.cloneNode(true));
@@ -1066,9 +1292,6 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const renderRelatedOptions = () => {
-            if (teacherSelect.value && !availableTeachers.has(teacherSelect.value)) {
-                teacherSelect.value = teacherOptions.find((option) => availableTeachers.has(option.value))?.value || '';
-            }
             applyUniqueAssignments();
             const roomId = roomSelect.value;
             const roomName = roomSelect.selectedOptions[0]?.dataset.roomName
@@ -1212,6 +1435,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const params = new URLSearchParams({
                 dia: day,
                 id_bloque: block,
+                fecha: dateInput.value,
                 id_horario: form.querySelector('[name="id_horario"]')?.value || '',
             });
             try {
@@ -1237,7 +1461,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderRelatedOptions();
                 updateChangedStyles();
                 updateObservation();
-                status.textContent = `${availableTeachers.size} profesores y ${availableRooms.size} salones disponibles para este bloque.`;
+                status.textContent = `${availableTeachers.size} profesores y ${availableRooms.size} salones disponibles para este horario y fecha.`;
             } catch (error) {
                 if (version !== requestVersion) return;
                 status.textContent = error.message;
@@ -1884,17 +2108,21 @@ document.addEventListener('DOMContentLoaded', () => {
         modal.classList.add('open');
         const noveltyForm = body.querySelector('form[data-novelty-form]');
         if (noveltyForm) setupNoveltyForm(noveltyForm);
+        const roomCreateEditor = body.querySelector('form[data-room-create-editor]');
+        if (roomCreateEditor) setupRoomCreateEditor(roomCreateEditor);
+        const roomClassEditor = body.querySelector('form[data-room-class-editor]');
+        if (roomClassEditor) setupRoomClassEditor(roomClassEditor);
         const classEditorForm = body.querySelector('form[data-class-editor]');
         if (classEditorForm) setupClassEditor(classEditorForm);
         const gradeForm = body.querySelector('form[data-grade-validation]');
         if (gradeForm) setupGradeDuplicateCheck(gradeForm);
         const centerInterestForm = body.querySelector('form[data-center-interest-form]');
         if (centerInterestForm) setupCenterInterestBreakOptions(centerInterestForm);
-        const availabilityForm = body.querySelector('form[data-room-availability]');
-        if (availabilityForm) {
+        const availabilityForms = body.querySelectorAll('form[data-room-availability]');
+        availabilityForms.forEach((availabilityForm) => {
             updateRoomAvailability(availabilityForm);
             setupResourceFinder(availabilityForm);
-        }
+        });
         body.querySelector('input, select, textarea')?.focus();
     };
 
@@ -2461,18 +2689,6 @@ document.addEventListener('DOMContentLoaded', () => {
             delete form.dataset.skipCancelSequence;
         }
 
-        if (isPermanentCancelledSave && form.dataset.middleClass === 'true') {
-            event.preventDefault();
-            if (!await showConfirmDialog('Guardar como descanso', middayBreakMessage)) return;
-            stateSelect.value = 'DESCANSO';
-            const resolution = form.querySelector('[name="resolucion_cancelacion"]');
-            if (resolution) resolution.value = 'descanso';
-            stateSelect.dispatchEvent(new Event('change', {bubbles: true}));
-            form.dataset.middayBreakConfirmed = 'true';
-            form.requestSubmit(event.submitter);
-            return;
-        }
-
         const isPermanentMiddayBreak = event.submitter?.matches('[data-save-permanently]')
             && stateSelect?.value === 'DESCANSO'
             && form.dataset.middleClass === 'true'
@@ -2486,7 +2702,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (!isPermanentDelete && !isPermanentCancelledSave && !shouldSkipCancelSequenceCheck && stateSelect && blockSelect && dateInput && stateSelect.value) {
-            const selectedNumber = Number(blockSelect.selectedOptions[0]?.dataset.number || 0);
+            const selectedNumber = blockSelect instanceof HTMLSelectElement
+                ? Number(blockSelect.selectedOptions[0]?.dataset.number || 0)
+                : 0;
             const dateValue = dateInput.value;
             const table = document.querySelector('.schedule');
 
@@ -2496,8 +2714,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const dayIndex = ((jsDay + 6) % 7) + 1;
                 const rows = Array.from(table.querySelectorAll('tbody tr'));
 
-                let bloqueAnteriorActivo = false;
-                let tieneBloquePosterior = false;
                 let tieneCanceladasPosterioresConsecutivas = false;
                 let cadenaPosteriorContinua = true;
 
@@ -2510,14 +2726,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!classBlock) continue;
                     const isCancelled = classBlock.classList.contains('is-cancelled') || classBlock.textContent.includes('CANCELADA');
 
-                    if (blockNumber < selectedNumber && !isCancelled) {
-                        bloqueAnteriorActivo = true;
-                    }
-
-                    if (blockNumber > selectedNumber && !isCancelled) {
-                        tieneBloquePosterior = true;
-                    }
-
                     if (blockNumber > selectedNumber && cadenaPosteriorContinua) {
                         if (isCancelled) {
                             tieneCanceladasPosterioresConsecutivas = true;
@@ -2525,27 +2733,6 @@ document.addEventListener('DOMContentLoaded', () => {
                             cadenaPosteriorContinua = false;
                         }
                     }
-                }
-
-                const esPrimeraClase = !Array.from(rows).some((row) => {
-                    const cells = Array.from(row.querySelectorAll('td'));
-                    const blockNumber = Number(cells[0]?.textContent.match(/Bloque\s+(\d+)/)?.[1] || 0);
-                    if (!blockNumber || cells.length <= dayIndex) return false;
-                    return blockNumber < selectedNumber && cells[dayIndex]?.querySelector('.cell-class');
-                });
-                const esUltimaClase = !Array.from(rows).some((row) => {
-                    const cells = Array.from(row.querySelectorAll('td'));
-                    const blockNumber = Number(cells[0]?.textContent.match(/Bloque\s+(\d+)/)?.[1] || 0);
-                    if (!blockNumber || cells.length <= dayIndex) return false;
-                    return blockNumber > selectedNumber && cells[dayIndex]?.querySelector('.cell-class');
-                });
-
-                if (stateSelect.value === 'CANCELADA' && !esPrimeraClase && !esUltimaClase && bloqueAnteriorActivo && tieneBloquePosterior) {
-                    event.preventDefault();
-                    const message = 'No se puede cancelar una clase que esté en medio de la jornada porque hay clases anteriores del mismo día y grado que aún están programadas. Primero deben cancelarse las clases que la preceden.';
-                    stateSelect.value = 'PROGRAMADA';
-                    showAlertDialog('Aviso', message);
-                    return;
                 }
 
                 if (stateSelect.value === 'PROGRAMADA' && permanentSaveInput?.value === '1' && tieneCanceladasPosterioresConsecutivas) {
@@ -2576,13 +2763,18 @@ document.addEventListener('DOMContentLoaded', () => {
             && (form.dataset.breakAddition === 'true' || form.querySelector('[name="novedad_descanso"]') !== null)
             && stateSelect.value === 'PROGRAMADA'
         );
+        const isPermanentBreakConversion = isBreakAdditionWarning && permanentSaveInput?.value === '1';
         const message = isBreakReplacementWarning
                 ? 'Se guardará este reemplazo de descanso en estado PROGRAMADA. ¿Desea continuar?'
                 : isBreakAdditionWarning
-                    ? 'La clase se guardará como novedad para este descanso y no modificará el horario semanal. ¿Desea continuar?'
+                    ? (isPermanentBreakConversion
+                        ? 'La clase reemplazará este descanso cada semana para este grado. Los demás días conservarán el descanso y los otros grados no tendrán cambios. ¿Desea continuar?'
+                        : 'La clase se guardará como novedad para este descanso y no modificará el horario semanal. ¿Desea continuar?')
                 : form.dataset.middayBreakConfirmed === 'true' && event.submitter?.matches('[data-save-permanently]')
                     ? ''
-                    : event.submitter?.dataset.confirm || form.dataset.confirm;
+                    : isPermanentCancelledSave
+                        ? 'La clase se cancelará permanentemente y se quitará del horario semanal. ¿Desea continuar?'
+                        : event.submitter?.dataset.confirm || form.dataset.confirm;
         if (!message) return;
 
         event.preventDefault();

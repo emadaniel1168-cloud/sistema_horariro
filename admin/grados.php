@@ -50,14 +50,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             db_exec('UPDATE grados SET activo = ? WHERE id_grado = ?', [$next, $id]);
             flash_set('success', 'Información actualizada correctamente.');
         } elseif ($action === 'delete') {
-            $id = post('id_grado');
-            $used = db_count('SELECT COUNT(*) AS total FROM horario_semanal WHERE id_grado = ?', [$id]);
-            if ($used > 0) {
-                db_exec('UPDATE grados SET activo = 0 WHERE id_grado = ?', [$id]);
-                flash_set('error', 'No se puede eliminar porque tiene horarios asociados. El grado fue desactivado.');
-            } else {
-                db_exec('DELETE FROM grados WHERE id_grado = ?', [$id]);
-                flash_set('success', 'Registro eliminado correctamente.');
+            $id = trim((string) post('id_grado', ''));
+            if ($id === '') {
+                throw new RuntimeException('No se encontró el grado a eliminar.');
+            }
+
+            asegurar_esquema_novedades();
+            asegurar_tabla_descansos_por_dia();
+            $pdo = db();
+            $pdo->beginTransaction();
+            try {
+                $grado = db_one('SELECT id_grado FROM grados WHERE id_grado = ? FOR UPDATE', [$id]);
+                if (!$grado) {
+                    throw new RuntimeException('El grado no existe.');
+                }
+
+                db_exec(
+                    'DELETE n FROM novedades_cambios_horario n
+                     LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
+                     WHERE n.id_grado = ? OR h.id_grado = ?',
+                    [$id, $id]
+                );
+                db_exec('DELETE FROM horario_semanal WHERE id_grado = ?', [$id]);
+                if (db_exec('DELETE FROM grados WHERE id_grado = ?', [$id]) !== 1) {
+                    throw new RuntimeException('No se pudo eliminar el grado.');
+                }
+                $pdo->commit();
+                flash_set('success', 'El grado y sus horarios asociados fueron eliminados correctamente.');
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $e;
             }
         }
     } catch (PDOException $e) {
@@ -111,7 +135,7 @@ require dirname(__DIR__) . '/includes/header.php';
                                 <?= (int) $row['activo'] === 1 ? 'Desactivar' : 'Activar' ?>
                             </button>
                         </form>
-                        <form method="post" data-confirm="¿Está seguro de que desea eliminar este registro?">
+                        <form method="post" data-confirm="¿Desea eliminar este grado y todos sus horarios y novedades asociadas? Esta acción no se puede deshacer.">
                             <?= csrf_field() ?>
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="id_grado" value="<?= e($row['id_grado']) ?>">
