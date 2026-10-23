@@ -8,9 +8,6 @@ require_admin_auth();
 
 $sectionTitle = 'Salones';
 asegurar_esquema_novedades();
-asegurar_tabla_salon_profesores();
-asegurar_tabla_novedades_temporales();
-asegurar_tabla_horario_original_novedad();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_csrf();
@@ -27,129 +24,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $id = (int) post('id_salon', '0');
             $nombre = post('nombre');
             $activo = post('activo') === '1' ? 1 : 0;
-            $profesorId = (int) post('id_profesor', '0');
-            $profesorAEliminarRaw = post('profesor_a_quitar', '');
-            $guardarPermanente = post('guardar_permanente', '') === '1';
             if (!$id || !$nombre) {
                 throw new RuntimeException('Debe indicar el nombre del salón.');
             }
-            if ($guardarPermanente && $profesorId === 0) {
-                throw new RuntimeException('Seleccione un profesor para guardar el vínculo permanente.');
-            }
-            if ($profesorAEliminarRaw !== '' && $profesorId > 0) {
-                throw new RuntimeException('No se puede agregar y quitar un profesor en la misma operación.');
-            }
-            if ($profesorId > 0) {
-                asegurar_tabla_cambios_horario();
-            }
-
-            $clasesAgregadas = 0;
-            db()->beginTransaction();
-            try {
-                if ($profesorId > 0 && $profesorAEliminarRaw === '') {
-                    if (!$profesorId || !exists_id('profesores', 'id_profesor', $profesorId)) {
-                        throw new RuntimeException('El profesor seleccionado no existe.');
-                    }
-                    if ($guardarPermanente) {
-                        db_exec(
-                            'INSERT IGNORE INTO salon_profesores (id_salon, id_profesor) VALUES (?, ?)',
-                            [$id, $profesorId]
-                        );
-                    }
-                    $clasesParaAsignar = $guardarPermanente
-                        ? db_all(
-                            'SELECT id_horario, id_profesor FROM horario_semanal
-                             WHERE id_salon = ? AND estado = \'PROGRAMADA\'
-                               AND (id_profesor IS NULL OR id_profesor = ?)
-                             FOR UPDATE',
-                            [$id, $profesorId]
-                        )
-                        : db_all(
-                            'SELECT id_horario, id_profesor FROM horario_semanal
-                             WHERE id_salon = ? AND id_profesor IS NULL AND estado = \'PROGRAMADA\'
-                             FOR UPDATE',
-                            [$id]
-                        );
-                    $grupoTemporal = $guardarPermanente ? bin2hex(random_bytes(16)) : null;
-                    $nombreProfesor = $guardarPermanente
-                        ? (db_one('SELECT nombre_completo FROM profesores WHERE id_profesor = ?', [$profesorId])['nombre_completo'] ?? 'Profesor')
-                        : '';
-                    foreach ($clasesParaAsignar as $clase) {
-                        if ($clase['id_profesor'] === null) {
-                            if ($guardarPermanente) {
-                                eliminar_horario_original_novedad((int) $clase['id_horario']);
-                            } else {
-                                guardar_horario_original_novedad((int) $clase['id_horario']);
-                            }
-                            db_exec(
-                                'UPDATE horario_semanal SET id_profesor = ? WHERE id_horario = ? AND id_profesor IS NULL',
-                                [$profesorId, $clase['id_horario']]
-                            );
-                            registrar_cambio_horario((int) $clase['id_horario'], 'CAMBIO', 'Profesor agregado al salón desde el formulario de salones.');
-                        }
-                        if ($guardarPermanente) {
-                            db_exec(
-                                "UPDATE novedades_cambios_horario SET estado = 'CANCELADA'
-                                 WHERE id_horario = ? AND estado = 'ACTIVA' AND nuevo_profesor IS NULL
-                                   AND observacion LIKE 'Profesor eliminado del salón %'",
-                                [$clase['id_horario']]
-                            );
-                            db_exec('DELETE FROM novedades_temporales WHERE id_horario = ?', [$clase['id_horario']]);
-                            db_exec(
-                                'INSERT INTO novedades_temporales (grupo_novedad, id_horario, expira_en, observacion)
-                                 VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 3 MINUTE), ?)',
-                                [$grupoTemporal, $clase['id_horario'], 'Profesor asignado: ' . $nombreProfesor . '. Vínculo permanente con el salón ' . $nombre . '.']
-                            );
-                        } elseif (!db_one(
-                            'SELECT id_cambio FROM novedades_cambios_horario WHERE id_horario = ? AND fecha = CURDATE() AND estado = "ACTIVA"',
-                            [$clase['id_horario']]
-                        )) {
-                            db_exec(
-                                'INSERT INTO novedades_cambios_horario (tipo_cambio, id_horario, fecha, nuevo_profesor, nueva_materia, nuevo_salon, observacion, estado)
-                                 VALUES ("NOVEDAD", ?, CURDATE(), ?, NULL, NULL, ?, "ACTIVA")',
-                                [$clase['id_horario'], $profesorId, 'Profesor agregado al salón desde el formulario de salones.']
-                            );
-                        }
-                    }
-                    $clasesAgregadas = count($clasesParaAsignar);
-                }
-                if ($profesorAEliminarRaw !== '') {
-                    $profesorParaQuitar = (int) $profesorAEliminarRaw;
-                    if (!$profesorParaQuitar || !exists_id('profesores', 'id_profesor', $profesorParaQuitar)) {
-                        throw new RuntimeException('Debe seleccionar un profesor válido para quitar de este salón.');
-                    }
-                    $clasesProfesor = db_count('SELECT COUNT(*) AS total FROM horario_semanal WHERE id_salon = ? AND id_profesor = ?', [$id, $profesorParaQuitar]);
-                    $vinculoPermanente = db_count('SELECT COUNT(*) AS total FROM salon_profesores WHERE id_salon = ? AND id_profesor = ?', [$id, $profesorParaQuitar]);
-                    if ($clasesProfesor === 0 && $vinculoPermanente === 0) {
-                        throw new RuntimeException('El profesor seleccionado no está asignado a este salón.');
-                    }
-                    if ($clasesProfesor > 0) {
-                        registrar_novedad_por_desvincular_profesor('salon', $id, $profesorParaQuitar);
-                    }
-                    db_exec('UPDATE horario_semanal SET id_profesor = NULL WHERE id_salon = ? AND id_profesor = ?', [$id, $profesorParaQuitar]);
-                    db_exec('DELETE FROM salon_profesores WHERE id_salon = ? AND id_profesor = ?', [$id, $profesorParaQuitar]);
-                    db_exec(
-                        'DELETE t FROM novedades_temporales t JOIN horario_semanal h ON h.id_horario = t.id_horario WHERE h.id_salon = ? AND h.id_profesor IS NULL',
-                        [$id]
-                    );
-                }
-                db_exec('UPDATE salones SET nombre = ?, activo = ? WHERE id_salon = ?', [$nombre, $activo, $id]);
-                db()->commit();
-            } catch (Throwable $e) {
-                if (db()->inTransaction()) {
-                    db()->rollBack();
-                }
-                throw $e;
-            }
-            flash_set(
-                'success',
-                $guardarPermanente
-                    ? 'Vínculo permanente guardado. Profesor agregado a ' . $clasesAgregadas . ' clase(s) sin profesor.'
-                        . ($clasesAgregadas > 0 ? ' La novedad temporal quedará visible durante 3 minutos.' : ' No había clases sin profesor; no se generaron novedades temporales.')
-                    : ($clasesAgregadas > 0
-                        ? 'Profesor agregado a ' . $clasesAgregadas . ' clase(s) sin profesor. Información actualizada correctamente.'
-                        : 'Información actualizada correctamente.')
-            );
+            db_exec('UPDATE salones SET nombre = ?, activo = ? WHERE id_salon = ?', [$nombre, $activo, $id]);
+            flash_set('success', 'Información actualizada correctamente.');
         } elseif ($action === 'toggle') {
             $id = (int) post('id_salon', '0');
             $row = db_one('SELECT activo FROM salones WHERE id_salon = ?', [$id]);
@@ -190,8 +69,6 @@ $sql .= ' GROUP BY s.id_salon, s.nombre, s.activo
           ORDER BY CASE WHEN s.nombre REGEXP \'[0-9]+$\' THEN 0 ELSE 1 END,
                    CAST(SUBSTRING_INDEX(s.nombre, \' \', -1) AS UNSIGNED), s.nombre';
 $rows = db_all($sql, $params);
-$profesores = db_all('SELECT id_profesor, nombre_completo FROM profesores WHERE activo = 1 ORDER BY nombre_completo');
-
 require dirname(__DIR__) . '/includes/header.php';
 ?>
 <section class="card">
@@ -232,35 +109,12 @@ require dirname(__DIR__) . '/includes/header.php';
                         <?= csrf_field() ?>
                         <input type="hidden" name="action" value="update">
                         <input type="hidden" name="id_salon" value="<?= (int) $row['id_salon'] ?>">
-                        <?php
-                            $profesoresSalon = db_all(
-                                'SELECT id_profesor FROM horario_semanal WHERE id_salon = ? AND id_profesor IS NOT NULL
-                                 UNION SELECT id_profesor FROM salon_profesores WHERE id_salon = ?',
-                                [$row['id_salon'], $row['id_salon']]
-                            );
-                            $profesoresSalonIds = array_fill_keys(array_map('intval', array_column($profesoresSalon, 'id_profesor')), true);
-                        ?>
                         <div class="field">
                             <label>Nombre</label>
                             <select name="nombre" required>
                                 <option value="">Seleccione un salón</option>
                                 <?= options_html($rows, 'nombre', 'nombre', $row['nombre'], false) ?>
                             </select>
-                        </div>
-                        <div class="field">
-                            <label>Profesor</label>
-                            <select name="id_profesor" data-professor-mode-select>
-                                <option value="0">Seleccione un profesor</option>
-                                <?php foreach ($profesores as $profesor): ?>
-                                    <?php $asignado = isset($profesoresSalonIds[(int) $profesor['id_profesor']]); ?>
-                                    <option value="<?= (int) $profesor['id_profesor'] ?>" data-room-assigned="<?= $asignado ? '1' : '0' ?>" <?= $asignado ? 'hidden disabled' : '' ?>><?= e($profesor['nombre_completo']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                            <input type="hidden" name="profesor_a_quitar" value="">
-                        </div>
-                        <div class="actions professor-actions">
-                            <button type="button" class="btn btn-danger btn-clear-profesor" data-clear-select="id_profesor" data-resource-label="salón" hidden disabled>Eliminar profesor</button>
-                            <button type="button" class="btn btn-ghost" data-toggle-professor-list data-assigned-label="Profesores del salón" data-available-label="Todos los profesores">Profesores del salón</button>
                         </div>
                         <div class="field">
                             <label>Estado</label>
@@ -271,7 +125,6 @@ require dirname(__DIR__) . '/includes/header.php';
                         </div>
                         <div class="actions">
                             <button class="btn btn-primary" type="submit">Guardar</button>
-                            <button class="btn btn-secondary" type="submit" data-save-permanently data-confirm="Guardar permanentemente vinculará este profesor al salón y lo asignará a sus clases actuales que no tengan profesor. El horario cambiará y se mostrará un aviso verde durante 3 minutos; después se quitará el resaltado sin deshacer los cambios. ¿Desea continuar?">Guardar permanente</button>
                         </div>
                     </form>
                 </template>

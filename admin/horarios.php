@@ -9,7 +9,6 @@ asegurar_columna_bloque_agregado_horario();
 asegurar_esquema_novedades();
 limpiar_avisos_temporales_eliminacion();
 sincronizar_novedades_con_horario();
-asegurar_tabla_huecos_horario_temporales();
 asegurar_tabla_descansos_reemplazados();
 asegurar_tabla_descansos_por_dia();
 
@@ -246,7 +245,6 @@ if (get('api') === 'salones') {
     exit;
 }
 asegurar_tabla_materia_profesores();
-asegurar_tabla_salon_profesores();
 asegurar_tabla_novedades_temporales();
 asegurar_tabla_horario_original_novedad();
 $grados = db_all('SELECT g.id_grado, c.nombre AS calendario FROM grados g JOIN calendarios c ON c.id_calendario = g.id_calendario WHERE g.activo = 1 ORDER BY CAST(SUBSTRING_INDEX(g.id_grado, \'-\', 1) AS UNSIGNED), CAST(SUBSTRING_INDEX(g.id_grado, \'-\', -1) AS UNSIGNED)');
@@ -322,17 +320,13 @@ $profesores = db_all(
             GROUP_CONCAT(DISTINCT h.id_materia ORDER BY h.id_materia) AS materias,
             GROUP_CONCAT(DISTINCT h.id_salon ORDER BY h.id_salon) AS salones,
             GROUP_CONCAT(DISTINCT CASE WHEN h.permanente = 1 THEN h.id_materia END ORDER BY h.id_materia) AS materias_permanentes,
-            GROUP_CONCAT(DISTINCT CASE WHEN h.permanente_salon = 1 THEN h.id_salon END ORDER BY h.id_salon) AS salones_permanentes,
             GROUP_CONCAT(DISTINCT CONCAT(hs.id_salon, ':', hs.total)) AS conteo_salones
     FROM profesores p LEFT JOIN (
-        SELECT id_profesor, id_materia, id_salon, 0 AS permanente, 0 AS permanente_salon
+        SELECT id_profesor, id_materia, id_salon, 0 AS permanente
         FROM horario_semanal WHERE estado = 'PROGRAMADA'
         UNION ALL
-        SELECT id_profesor, id_materia, NULL AS id_salon, 1 AS permanente, 0 AS permanente_salon
+        SELECT id_profesor, id_materia, NULL AS id_salon, 1 AS permanente
         FROM materia_profesores
-        UNION ALL
-        SELECT id_profesor, NULL AS id_materia, id_salon, 0 AS permanente, 1 AS permanente_salon
-        FROM salon_profesores
     ) h ON h.id_profesor = p.id_profesor
     LEFT JOIN (
         SELECT id_profesor, id_salon, COUNT(*) AS total
@@ -347,10 +341,9 @@ foreach ($profesores as &$profesor) {
         explode(',', (string) ($profesor['materias'] ?? '')),
         explode(',', (string) ($profesor['materias_permanentes'] ?? ''))
     ))));
-    $profesor['salones_todos'] = implode(',', array_unique(array_filter(array_merge(
-        explode(',', (string) ($profesor['salones'] ?? '')),
-        explode(',', (string) ($profesor['salones_permanentes'] ?? ''))
-    ))));
+    $profesor['salones_todos'] = implode(',', array_unique(array_filter(
+        explode(',', (string) ($profesor['salones'] ?? ''))
+    )));
 }
 unset($profesor);
 $salones = db_all("SELECT id_salon, nombre FROM salones WHERE activo = 1 ORDER BY CASE WHEN nombre REGEXP '[0-9]+$' THEN 0 ELSE 1 END, CAST(SUBSTRING_INDEX(nombre, ' ', -1) AS UNSIGNED), nombre");
@@ -449,10 +442,6 @@ function restaurar_mapeo_bloques_al_calendario_base(string $idGrado, int $idCale
         );
         db_exec(
             'UPDATE novedades_cambios_horario SET id_bloque = ? WHERE id_grado = ? AND id_bloque = ?',
-            [$idBloqueBase, $idGrado, $idBloqueActual]
-        );
-        db_exec(
-            'UPDATE huecos_horario_temporales SET id_bloque = ? WHERE id_grado = ? AND id_bloque = ?',
             [$idBloqueBase, $idGrado, $idBloqueActual]
         );
     }
@@ -599,11 +588,8 @@ function validate_horario(?int $ignoreId = null, bool $validarDisponibilidadPorF
         $profesoresPermanentes = db_all(
             'SELECT mp.id_profesor FROM materia_profesores mp
              JOIN profesores p ON p.id_profesor = mp.id_profesor AND p.activo = 1
-             WHERE mp.id_materia = ?
-             UNION SELECT sp.id_profesor FROM salon_profesores sp
-             JOIN profesores ps ON ps.id_profesor = sp.id_profesor AND ps.activo = 1
-             WHERE sp.id_salon = ?',
-            [$materia, $salonId ?? 0]
+             WHERE mp.id_materia = ?',
+            [$materia]
         );
         if (count($profesoresPermanentes) === 1) {
             $profesorId = (int) $profesoresPermanentes[0]['id_profesor'];
@@ -614,8 +600,7 @@ function validate_horario(?int $ignoreId = null, bool $validarDisponibilidadPorF
     }
     if ($profesorId && $ignoreId === null
         && db_count('SELECT COUNT(*) AS total FROM horario_semanal WHERE id_profesor = ? AND id_materia = ?', [$profesorId, $materia]) === 0
-        && db_count('SELECT COUNT(*) AS total FROM materia_profesores WHERE id_profesor = ? AND id_materia = ?', [$profesorId, $materia]) === 0
-        && (!$salonId || db_count('SELECT COUNT(*) AS total FROM salon_profesores WHERE id_profesor = ? AND id_salon = ?', [$profesorId, $salonId]) === 0)) {
+        && db_count('SELECT COUNT(*) AS total FROM materia_profesores WHERE id_profesor = ? AND id_materia = ?', [$profesorId, $materia]) === 0) {
         throw new RuntimeException('La materia seleccionada no está asignada a ese profesor.');
     }
     if ($salonId && !exists_id('salones', 'id_salon', $salonId)) {
@@ -662,53 +647,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($operation === 'cancel_addition') {
         $action = 'cancel_addition';
     }
+    if ($action === 'update_addition' && post('estado') === 'DESCANSO') {
+        $action = 'cancel_addition';
+    }
     if ($action === 'create' && (int) post('id_horario', '0') > 0) {
         $action = 'update';
     }
     $backGrado = post('id_grado') ?: get('grado');
     try {
-        if ($action === 'convert_class_slot_to_break') {
+        if ($action === 'create' && post('estado') === 'DESCANSO') {
             $idGrado = post('id_grado', '');
-            $idDia = (int) post('convertir_dia', '0');
-            $idBloque = (int) post('convertir_bloque', '0');
-            if (post('confirmar_conversion_descanso', '0') !== '1') {
-                throw new RuntimeException('Confirma la conversión de esta casilla a descanso.');
+            $fecha = post('fecha', '');
+            $fechaValida = DateTimeImmutable::createFromFormat('!Y-m-d', $fecha);
+            $idBloque = (int) post('id_bloque', '0');
+            if (!$fechaValida || $fechaValida->format('Y-m-d') !== $fecha || $fechaValida < new DateTimeImmutable('today')) {
+                throw new RuntimeException('Seleccione una fecha válida, igual o posterior a hoy.');
             }
-            $gradoConvertir = db_one('SELECT id_calendario FROM grados WHERE id_grado = ? AND activo = 1', [$idGrado]);
-            $bloqueConvertir = db_one(
-                'SELECT id_calendario, tipo, agregado_desde_horario FROM bloques_horarios WHERE id_bloque = ?',
+            $idDia = (int) $fechaValida->format('N');
+            $gradoDescanso = db_one('SELECT id_calendario FROM grados WHERE id_grado = ? AND activo = 1', [$idGrado]);
+            $bloqueDescanso = db_one(
+                "SELECT b.id_calendario, b.tipo, b.agregado_desde_horario
+                 FROM bloques_horarios b
+                 JOIN bloques_descansos_reemplazados r ON r.id_bloque_agregado = b.id_bloque
+                 WHERE b.id_bloque = ? AND r.accion = 'PARCIAL'",
                 [$idBloque]
             );
-            $respaldoDescanso = db_one(
-                "SELECT id_bloque_agregado FROM bloques_descansos_reemplazados
-                 WHERE id_bloque_agregado = ? AND accion = 'PARCIAL'",
-                [$idBloque]
-            );
-            if (!$gradoConvertir || !$bloqueConvertir || !$respaldoDescanso
-                || (int) $bloqueConvertir['id_calendario'] !== (int) $gradoConvertir['id_calendario']
-                || $bloqueConvertir['tipo'] !== 'CLASE'
-                || (int) $bloqueConvertir['agregado_desde_horario'] !== 1
-                || !exists_id('dias_semana', 'id_dia', $idDia)) {
-                throw new RuntimeException('Solo puedes convertir a descanso una casilla de un bloque que dividió un descanso.');
+            if (!$gradoDescanso || !$bloqueDescanso
+                || (int) $gradoDescanso['id_calendario'] !== (int) $bloqueDescanso['id_calendario']
+                || $bloqueDescanso['tipo'] !== 'CLASE'
+                || (int) $bloqueDescanso['agregado_desde_horario'] !== 1) {
+                throw new RuntimeException('Solo se puede marcar como descanso una casilla de un bloque que dividió un descanso.');
+            }
+            if (db_count(
+                'SELECT COUNT(*) AS total FROM grados WHERE id_calendario = ? AND activo = 1',
+                [(int) $gradoDescanso['id_calendario']]
+            ) !== 1) {
+                throw new RuntimeException('Solo puedes cambiar a descanso una casilla del calendario exclusivo de este grado.');
             }
             if (db_count(
                 'SELECT COUNT(*) AS total FROM horario_semanal WHERE id_grado = ? AND id_dia = ? AND id_bloque = ?',
                 [$idGrado, $idDia, $idBloque]
-            ) > 0) {
-                throw new RuntimeException('Solo puedes convertir a descanso una casilla vacía.');
-            }
-            if (db_count(
+            ) > 0 || db_count(
                 "SELECT COUNT(*) AS total FROM novedades_cambios_horario
                  WHERE id_grado = ? AND id_dia = ? AND id_bloque = ? AND estado = 'ACTIVA'",
                 [$idGrado, $idDia, $idBloque]
             ) > 0) {
-                throw new RuntimeException('No se puede convertir una casilla con novedades activas.');
+                throw new RuntimeException('No se puede marcar como descanso una casilla que ya tiene una clase o novedad activa.');
             }
             db_exec(
-                'INSERT INTO descansos_por_dia (id_grado, id_dia, id_bloque) VALUES (?, ?, ?)',
+                'INSERT IGNORE INTO descansos_por_dia (id_grado, id_dia, id_bloque) VALUES (?, ?, ?)',
                 [$idGrado, $idDia, $idBloque]
             );
-            flash_set('success', 'La casilla seleccionada se convirtió en descanso. Los demás días no cambiaron.');
+            flash_set('success', 'La casilla quedó marcada como descanso para ese día de la semana.');
             $backGrado = $idGrado;
         } elseif ($action === 'restore_split_break') {
             $idGrado = post('id_grado', '');
@@ -763,7 +753,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'UPDATE bloques_horarios SET hora_inicio = ? WHERE id_bloque = ?',
                     [$restauracion['hora_inicio'], (int) $descansoRestante['id_bloque']]
                 );
-                db_exec('DELETE FROM huecos_horario_temporales WHERE id_grado = ? AND id_bloque = ?', [$idGrado, $idBloque]);
                 db_exec('DELETE FROM bloques_horarios WHERE id_bloque = ?', [$idBloque]);
                 reordenar_bloques_clase_calendario((int) $restauracion['id_calendario']);
                 db()->commit();
@@ -804,6 +793,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      FROM bloques_descansos_reemplazados WHERE id_bloque_agregado = ? FOR UPDATE',
                     [$idBloque]
                 );
+                $idBloqueDescansoRestante = $descansoReemplazado !== null
+                    && $descansoReemplazado['accion'] === 'PARCIAL'
+                    ? (int) ($descansoReemplazado['id_bloque_descanso_restante'] ?? 0)
+                    : 0;
                 $bloqueSiguiente = $bloqueEliminar['tipo'] === 'CLASE' ? db_one(
                     "SELECT id_bloque, hora_inicio, hora_fin FROM bloques_horarios
                      WHERE id_calendario = ? AND tipo = 'CLASE' AND hora_inicio = ? AND id_bloque <> ?
@@ -818,9 +811,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ) : null;
                 $clasesBloque = db_all(
                     'SELECT id_dia, id_materia, id_profesor, id_salon, estado, observacion
-                     FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? ORDER BY id_dia',
+                     FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? AND estado <> \'DESCANSO\' ORDER BY id_dia',
                     [$idGrado, $idBloque]
                 );
+                $clasesEnDescansoPartido = $idBloqueDescansoRestante > 0
+                    ? db_count(
+                        "SELECT COUNT(*) AS total FROM horario_semanal
+                         WHERE id_grado = ? AND id_bloque = ? AND estado <> 'DESCANSO'",
+                        [$idGrado, $idBloqueDescansoRestante]
+                    )
+                    : 0;
+                $adicionesActivasEnBloques = db_count(
+                    "SELECT COUNT(*) AS total FROM novedades_cambios_horario
+                     WHERE tipo_cambio = 'ADICION' AND estado = 'ACTIVA'
+                       AND id_grado = ? AND id_bloque IN (?, ?)",
+                    [$idGrado, $idBloque, $idBloqueDescansoRestante]
+                );
+                if ($clasesBloque !== [] || $clasesEnDescansoPartido > 0 || $adicionesActivasEnBloques > 0) {
+                    throw new RuntimeException('No se puede unificar el descanso porque al menos uno de los bloques tiene una clase asignada o una clase adicional activa.');
+                }
                 $clasesSiguiente = $bloqueSiguiente ? db_all(
                     'SELECT id_dia, id_materia, id_profesor, id_salon, estado, observacion
                      FROM horario_semanal WHERE id_grado = ? AND id_bloque = ? ORDER BY id_dia',
@@ -873,6 +882,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                 }
+                $idBloqueNovedadRelacionado = $idBloqueDescansoRestante > 0
+                    ? $idBloqueDescansoRestante
+                    : (int) ($bloqueSiguiente['id_bloque'] ?? 0);
+                $idBloqueNovedadRelacionadoAnterior = $idBloqueDescansoRestante > 0
+                    ? 0
+                    : (int) ($bloqueAnterior['id_bloque'] ?? 0);
                 $novedadesActivas = db_count(
                     "SELECT COUNT(*) AS total FROM novedades_cambios_horario n
                      LEFT JOIN horario_semanal h ON h.id_horario = n.id_horario
@@ -881,10 +896,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                          OR (h.id_grado = ? AND h.id_bloque IN (?, ?, ?))
                      )",
                     [
-                        $idGrado, $idBloque, (int) ($bloqueSiguiente['id_bloque'] ?? 0), (int) ($bloqueAnterior['id_bloque'] ?? 0),
-                        $idGrado, $idBloque, (int) ($bloqueSiguiente['id_bloque'] ?? 0), (int) ($bloqueAnterior['id_bloque'] ?? 0),
+                        $idGrado, $idBloque, $idBloqueDescansoRestante > 0 ? $idBloqueDescansoRestante : $idBloqueNovedadRelacionado,
+                        $idBloqueNovedadRelacionadoAnterior,
+                        $idGrado, $idBloque, $idBloqueDescansoRestante > 0 ? $idBloqueDescansoRestante : $idBloqueNovedadRelacionado,
+                        $idBloqueNovedadRelacionadoAnterior,
                     ]
                 );
+                if ($novedadesActivas > 0) {
+                    throw new RuntimeException('No se puede quitar el bloque mientras tenga novedades activas asociadas.');
+                }
                 $horariosOriginales = $bloqueSiguiente ? db_count(
                     'SELECT COUNT(*) AS total FROM horario_original_novedad o
                      JOIN horario_semanal h ON h.id_horario = o.id_horario
@@ -945,7 +965,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      WHERE tipo_cambio = 'BLOQUE' AND id_grado = ? AND id_bloque = ?",
                     [$idGrado, $idBloque]
                 );
-                db_exec('DELETE FROM huecos_horario_temporales WHERE id_grado = ? AND id_bloque = ?', [$idGrado, $idBloque]);
+                db_exec(
+                    "DELETE FROM horario_semanal
+                     WHERE id_grado = ? AND id_bloque = ? AND estado = 'DESCANSO'",
+                    [$idGrado, $idBloque]
+                );
                 db_exec('DELETE FROM bloques_horarios WHERE id_bloque = ? AND agregado_desde_horario = 1', [$idBloque]);
                 $idCalendarioActual = (int) db_one('SELECT id_calendario FROM grados WHERE id_grado = ? AND activo = 1', [$idGrado])['id_calendario'];
                 $idCalendarioBase = calendario_base_si_es_personalizado($idGrado, $idCalendarioActual);
@@ -1215,9 +1239,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 "SELECT COUNT(*) AS total FROM novedades_cambios_horario
                  WHERE id_grado = ? AND id_bloque IN (24, 25) AND estado = 'ACTIVA'",
                 [$idGrado]
-            ) + db_count(
-                'SELECT COUNT(*) AS total FROM huecos_horario_temporales WHERE id_grado = ? AND id_bloque IN (24, 25)',
-                [$idGrado]
             );
             if ($referenciasBloquesOcultos > 0) {
                 throw new RuntimeException('No se puede individualizar el calendario mientras existan clases o novedades en bloques antiguos ocultos.');
@@ -1350,10 +1371,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         db_exec(
                             "UPDATE novedades_cambios_horario SET id_bloque = ?
                              WHERE id_grado = ? AND id_bloque = ? AND estado = 'ACTIVA'",
-                            [$bloqueNuevoId, $idGrado, $bloqueOrigenId]
-                        );
-                        db_exec(
-                            'UPDATE huecos_horario_temporales SET id_bloque = ? WHERE id_grado = ? AND id_bloque = ?',
                             [$bloqueNuevoId, $idGrado, $bloqueOrigenId]
                         );
                     }
@@ -1695,19 +1712,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'cancel_addition') {
             $idNovedad = (int) post('id_novedad', '0');
             $adicion = db_one(
-                "SELECT id_cambio, id_grado FROM novedades_cambios_horario
+                "SELECT id_cambio, id_grado, id_dia, id_bloque FROM novedades_cambios_horario
                  WHERE id_cambio = ? AND tipo_cambio = 'ADICION' AND id_horario IS NULL AND estado = 'ACTIVA'",
                 [$idNovedad]
             );
             if (!$adicion || (string) $adicion['id_grado'] !== (string) post('id_grado', '')) {
                 throw new RuntimeException('No se encontró la novedad activa que desea cancelar.');
             }
-            db_exec(
-                "UPDATE novedades_cambios_horario SET estado = 'CANCELADA'
-                 WHERE id_cambio = ? AND tipo_cambio = 'ADICION' AND id_horario IS NULL AND estado = 'ACTIVA'",
-                [$idNovedad]
-            );
-            flash_set('success', 'Se canceló la novedad y se restauró el descanso de esta casilla.');
+            if (db_count(
+                'SELECT COUNT(*) AS total FROM descansos_por_dia WHERE id_grado = ? AND id_dia = ? AND id_bloque = ?',
+                [(string) $adicion['id_grado'], (int) $adicion['id_dia'], (int) $adicion['id_bloque']]
+            ) === 0) {
+                throw new RuntimeException('Esta novedad no reemplaza un descanso que pueda restaurarse.');
+            }
+            db()->beginTransaction();
+            try {
+                db_exec(
+                    "UPDATE novedades_cambios_horario SET estado = 'CANCELADA'
+                     WHERE id_cambio = ? AND tipo_cambio = 'ADICION' AND id_horario IS NULL AND estado = 'ACTIVA'",
+                    [$idNovedad]
+                );
+                db_exec(
+                    'INSERT IGNORE INTO descansos_por_dia (id_grado, id_dia, id_bloque) VALUES (?, ?, ?)',
+                    [(string) $adicion['id_grado'], (int) $adicion['id_dia'], (int) $adicion['id_bloque']]
+                );
+                db()->commit();
+            } catch (Throwable $e) {
+                if (db()->inTransaction()) {
+                    db()->rollBack();
+                }
+                throw $e;
+            }
+            flash_set('success', 'Se canceló la clase adicional y se restauró el descanso en esa casilla.');
             $backGrado = (string) $adicion['id_grado'];
         } elseif ($action === 'update_addition') {
             $idNovedad = (int) post('id_novedad', '0');
@@ -2104,9 +2140,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $bloques = [];
 $grid = [];
+$novedadesActivas = [];
+$novedadesPorDiaBloque = [];
 $descansosPorDiaBloque = [];
 $ocupacionesPorDia = [];
-$huecosTemporalesPorDiaBloque = [];
 $gradoInfo = null;
 if ($grado) {
     $gradoInfo = db_one(
@@ -2156,16 +2193,6 @@ if ($grado) {
         foreach (db_all('SELECT id_dia, id_bloque FROM descansos_por_dia WHERE id_grado = ?', [$grado]) as $descansoPorDia) {
             $descansosPorDiaBloque[(int) $descansoPorDia['id_bloque']][(int) $descansoPorDia['id_dia']] = true;
         }
-        $huecosTemporales = db_all(
-            'SELECT id_dia, id_bloque, UNIX_TIMESTAMP(expira_en) AS expira_timestamp
-             FROM huecos_horario_temporales WHERE id_grado = ? AND expira_en > NOW()',
-            [$grado]
-        );
-        foreach ($huecosTemporales as $huecoTemporal) {
-            $key = (int) $huecoTemporal['id_dia'] . ':' . (int) $huecoTemporal['id_bloque'];
-            $huecosTemporalesPorDiaBloque[$key] = (int) $huecoTemporal['expira_timestamp'];
-        }
-
         $novedadesActivas = db_all(
             'SELECT n.id_cambio AS id_novedad, n.tipo_cambio, n.id_horario, n.id_grado, n.fecha, n.nuevo_estado, n.nuevo_profesor, n.nueva_materia, n.nuevo_salon,
                     n.nueva_hora_inicio, n.nueva_hora_fin, n.observacion, n.estado,
@@ -2256,6 +2283,22 @@ $bloquesDescansoPartidos = array_fill_keys(array_map(
     'intval',
     array_column(db_all("SELECT id_bloque_agregado FROM bloques_descansos_reemplazados WHERE accion = 'PARCIAL'"), 'id_bloque_agregado')
 ), true);
+$bloquesConClases = [];
+foreach ($grid as $idBloqueGrid => $clasesPorDia) {
+    foreach ($clasesPorDia as $claseGrid) {
+        if (($claseGrid['estado'] ?? '') !== 'DESCANSO') {
+            $bloquesConClases[(int) $idBloqueGrid] = true;
+            break;
+        }
+    }
+}
+foreach ($novedadesActivas as $novedadActiva) {
+    $idBloqueNovedad = (int) ($novedadActiva['id_bloque'] ?? 0);
+    if (($novedadActiva['estado'] ?? '') === 'ACTIVA'
+        && (string) ($novedadActiva['id_grado'] ?? '') === (string) $grado) {
+        $bloquesConClases[$idBloqueNovedad] = true;
+    }
+}
 $bloquesParaPlanificar = array_map(static function (array $bloque) use ($grid): array {
     $diasProgramados = count(array_filter(
         $grid[(int) $bloque['id_bloque']] ?? [],
@@ -2340,7 +2383,6 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
     <form method="post" data-class-editor data-availability-url="<?= e(APP_BASE) ?>/admin/horarios.php?api=salones"
         data-break-addition="<?= $novedadDuranteDescanso ? 'true' : 'false' ?>"
         data-middle-class="<?= $claseEsIntermedia ? 'true' : 'false' ?>"
-        data-can-restore-break="<?= $puedeRestaurarDescanso ? 'true' : 'false' ?>"
         data-original-teacher="<?= e((string) ($row['id_profesor'] ?? '')) ?>"
         data-original-subject="<?= e((string) ($row['id_materia'] ?? '')) ?>"
         data-original-room="<?= e((string) ($row['id_salon'] ?? '')) ?>"
@@ -2353,11 +2395,6 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
         <input type="hidden" name="reprogramar_siguientes" value="0">
         <input type="hidden" name="action" value="<?= e($action) ?>">
         <?php if ($novedadDuranteDescanso): ?><input type="hidden" name="novedad_descanso" value="1"><?php endif; ?>
-        <?php if ($puedeRestaurarDescanso && isset($row['id_bloque'])): ?>
-            <input type="hidden" name="confirmar_conversion_descanso" value="0">
-            <input type="hidden" name="convertir_dia" value="<?= (int) ($row['id_dia'] ?? 0) ?>">
-            <input type="hidden" name="convertir_bloque" value="<?= (int) $row['id_bloque'] ?>">
-        <?php endif; ?>
         <?php if ($soloGuardarClase && isset($row['id_dia'], $row['id_bloque'])): ?>
             <input type="hidden" name="reemplazo_descanso" value="1">
             <input type="hidden" name="reemplazo_descanso_dia" value="<?= (int) $row['id_dia'] ?>">
@@ -2415,7 +2452,7 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                 <select name="id_profesor">
                     <option value=""><?= $soloGuardarClase ? 'No aplica' : '' ?></option>
                     <?php foreach ($profesores as $profesor): ?>
-                        <option value="<?= (int) $profesor['id_profesor'] ?>" data-subjects="<?= e((string) ($profesor['materias_todas'] ?? '')) ?>" data-permanent-subjects="<?= e((string) ($profesor['materias_permanentes'] ?? '')) ?>" data-rooms="<?= e((string) ($profesor['salones_todos'] ?? '')) ?>" data-permanent-rooms="<?= e((string) ($profesor['salones_permanentes'] ?? '')) ?>" data-room-counts="<?= e((string) ($profesor['conteo_salones'] ?? '')) ?>" <?= (int) ($row['id_profesor'] ?? 0) === (int) $profesor['id_profesor'] ? 'selected' : '' ?>><?= e($profesor['nombre_completo']) ?></option>
+                        <option value="<?= (int) $profesor['id_profesor'] ?>" data-subjects="<?= e((string) ($profesor['materias_todas'] ?? '')) ?>" data-permanent-subjects="<?= e((string) ($profesor['materias_permanentes'] ?? '')) ?>" data-rooms="<?= e((string) ($profesor['salones_todos'] ?? '')) ?>" data-room-counts="<?= e((string) ($profesor['conteo_salones'] ?? '')) ?>" <?= (int) ($row['id_profesor'] ?? 0) === (int) $profesor['id_profesor'] ? 'selected' : '' ?>><?= e($profesor['nombre_completo']) ?></option>
                     <?php endforeach; ?>
                 </select>
                 <span class="muted" data-not-applicable hidden>No aplica</span>
@@ -2433,7 +2470,11 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
             <label>Estado</label>
             <select name="estado">
                 <option value="PROGRAMADA" <?= $est === 'PROGRAMADA' ? 'selected' : '' ?>>PROGRAMADA</option>
-                <option value="DESCANSO" <?= $est === 'DESCANSO' ? 'selected' : '' ?>>DESCANSO</option>
+                <?php if ($puedeRestaurarDescanso
+                    || ($soloGuardarClase && ($idAdicion === null || $adicionReemplazaDescanso))
+                    || isset($row['id_horario'])): ?>
+                    <option value="DESCANSO" <?= $est === 'DESCANSO' ? 'selected' : '' ?>>DESCANSO</option>
+                <?php endif; ?>
                 <option value="CANCELADA" <?= $est === 'CANCELADA' ? 'selected' : '' ?>>CANCELADA</option>
             </select>
         </div>
@@ -2467,16 +2508,10 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
             <?php else: ?>
                 <button class="btn btn-primary" type="submit">Guardar</button>
             <?php endif; ?>
-            <?php if ($puedeRestaurarDescanso && !isset($row['id_horario'])): ?>
-                <button class="btn btn-secondary" type="button" data-convert-slot-to-break>Convertir esta casilla en descanso</button>
-            <?php endif; ?>
             <?php if (isset($row['id_horario'])): ?>
                 <button class="btn btn-secondary" type="submit" data-save-permanently data-confirm="Los cambios se aplicarán permanentemente al horario semanal. Se mostrarán en verde durante 3 minutos y luego quedarán guardados sin resaltado. ¿Desea continuar?">Guardar permanente</button>
             <?php elseif (!$soloGuardarClase && $idAdicion === null): ?>
                 <button class="btn btn-secondary" type="submit" data-save-permanently data-confirm="La clase se agregará al horario semanal de forma permanente y se resaltará en verde durante 3 minutos. ¿Desea continuar?">Guardar permanente</button>
-            <?php endif; ?>
-            <?php if ($idAdicion !== null && $adicionReemplazaDescanso): ?>
-                <button class="btn btn-secondary" type="submit" name="operation" value="cancel_addition" data-confirm="¿Cancelar esta novedad y volver a mostrar el descanso en esta casilla?">Convertir esta casilla en descanso</button>
             <?php endif; ?>
         </div>
     </form>
@@ -2700,8 +2735,7 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                                         <?php if ($esCancelada && $observacionVisible !== ''): ?><small class="schedule-novelty-note"><?= e($observacionVisible) ?></small><?php endif; ?>
                                     </div>
                                 <?php else: ?>
-                                    <?php $expiraHueco = $huecosTemporalesPorDiaBloque[$dia['id_dia'] . ':' . $bloque['id_bloque']] ?? null; ?>
-                                    <div class="cell-empty <?= $expiraHueco ? 'is-temporary' : '' ?>" <?= $expiraHueco ? 'data-expire-at="' . $expiraHueco * 1000 . '"' : '' ?> data-open-modal="tpl-create-<?= (int) $bloque['id_bloque'] ?>-<?= (int) $dia['id_dia'] ?>" data-title="Nueva clase">+</div>
+                                    <div class="cell-empty" data-open-modal="tpl-create-<?= (int) $bloque['id_bloque'] ?>-<?= (int) $dia['id_dia'] ?>" data-title="Nueva clase">+</div>
                                 <?php endif; ?>
                             <?php endif; ?>
                         </td>
@@ -2709,12 +2743,19 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                     <td class="schedule-block-remove">
                         <?php if ((int) ($bloque['agregado_desde_horario'] ?? 0) === 1): ?>
                             <?php $etiquetaBloqueAgregado = $bloque['tipo'] === 'DESCANSO' ? 'el descanso' : 'el bloque ' . (int) $bloque['numero_bloque']; ?>
-                            <form method="post" data-confirm="¿Quitar <?= e($etiquetaBloqueAgregado) ?>? Si forma parte de una clase continua sin cambios, el tramo se restaurará automáticamente.">
+                            <?php $bloqueTieneClases = isset($bloquesConClases[(int) $bloque['id_bloque']]); ?>
+                            <?php $bloqueEsDescansoPartido = isset($bloquesDescansoPartidos[(int) $bloque['id_bloque']]); ?>
+                            <?php $confirmacionQuitarBloque = $bloqueEsDescansoPartido
+                                ? '¿Unificar el descanso y quitar este bloque vacío? Solo se puede si ambos tramos no tienen clases ni novedades activas.'
+                                : '¿Quitar ' . $etiquetaBloqueAgregado . '? Solo se pueden quitar bloques sin clases asignadas ni novedades de clase activas.'; ?>
+                            <form method="post" data-confirm="<?= e($confirmacionQuitarBloque) ?>">
                                 <?= csrf_field() ?>
                                 <input type="hidden" name="action" value="delete_calendar_block">
                                 <input type="hidden" name="id_grado" value="<?= e($grado) ?>">
                                 <input type="hidden" name="id_bloque" value="<?= (int) $bloque['id_bloque'] ?>">
-                                <button class="btn btn-sm btn-danger schedule-inline-action schedule-remove-action" type="submit" title="Quitar <?= e($etiquetaBloqueAgregado) ?>" aria-label="Quitar <?= e($etiquetaBloqueAgregado) ?>">-</button>
+                                <button class="btn btn-sm btn-danger schedule-inline-action schedule-remove-action" type="submit"
+                                    <?= $bloqueTieneClases ? 'disabled title="No se puede quitar: el bloque tiene una clase asignada."' : 'title="Quitar ' . e($etiquetaBloqueAgregado) . '"' ?>
+                                    aria-label="<?= $bloqueTieneClases ? 'No se puede quitar el bloque porque tiene una clase asignada' : 'Quitar ' . e($etiquetaBloqueAgregado) ?>">-</button>
                             </form>
                         <?php else: ?>
                             <button class="btn btn-sm btn-danger schedule-inline-action schedule-remove-action" type="button" disabled title="Solo se pueden quitar bloques agregados" aria-label="El bloque <?= (int) $bloque['numero_bloque'] ?> no se puede quitar">-</button>

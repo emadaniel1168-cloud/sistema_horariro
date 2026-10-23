@@ -508,9 +508,7 @@ $conteoSalonesProfesor = [];
 foreach (db_all(
     'SELECT id_profesor, id_salon, COUNT(*) AS total FROM horario_semanal
      WHERE estado = \'PROGRAMADA\' AND id_salon IS NOT NULL
-     GROUP BY id_profesor, id_salon
-     UNION ALL
-     SELECT id_profesor, id_salon, 0 AS total FROM salon_profesores'
+     GROUP BY id_profesor, id_salon'
 ) as $relacionProfesorSalon) {
     $idProfesor = (int) $relacionProfesorSalon['id_profesor'];
     $idSalon = (int) $relacionProfesorSalon['id_salon'];

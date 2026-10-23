@@ -470,27 +470,6 @@ function asegurar_tabla_materia_profesores(): void
     $ready = true;
 }
 
-function asegurar_tabla_salon_profesores(): void
-{
-    static $ready = false;
-    if ($ready) {
-        return;
-    }
-
-    db()->exec(
-        'CREATE TABLE IF NOT EXISTS salon_profesores (
-            id_salon INT NOT NULL,
-            id_profesor INT NOT NULL,
-            creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id_salon, id_profesor),
-            KEY idx_salon_profesores_profesor (id_profesor),
-            CONSTRAINT fk_salon_profesores_salon FOREIGN KEY (id_salon) REFERENCES salones (id_salon) ON DELETE CASCADE,
-            CONSTRAINT fk_salon_profesores_profesor FOREIGN KEY (id_profesor) REFERENCES profesores (id_profesor) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
-    );
-    $ready = true;
-}
-
 function obtener_clases_canceladas_profesor(int $idProfesor): array
 {
     return db_all(
@@ -640,25 +619,6 @@ function limpiar_avisos_temporales_eliminacion(): void
            AND estado <> 'ARCHIVADO'
            AND creado_en <= DATE_SUB(NOW(), INTERVAL 3 MINUTE)"
     );
-}
-
-function asegurar_tabla_huecos_horario_temporales(): void
-{
-    static $ready = false;
-    if (!$ready) {
-        db()->exec(
-            'CREATE TABLE IF NOT EXISTS huecos_horario_temporales (
-                id_grado VARCHAR(32) NOT NULL,
-                id_dia INT NOT NULL,
-                id_bloque INT NOT NULL,
-                expira_en DATETIME NOT NULL,
-                PRIMARY KEY (id_grado, id_dia, id_bloque),
-                KEY idx_huecos_horario_temporales_expira (expira_en)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
-        );
-        $ready = true;
-    }
-    db_exec('DELETE FROM huecos_horario_temporales WHERE expira_en <= NOW()');
 }
 
 function asegurar_tabla_cambios_horario(): void
@@ -1131,7 +1091,7 @@ function asegurar_tabla_admin(): void
     if (db_one('SELECT id FROM admin LIMIT 1') === null) {
         db_exec(
             'INSERT INTO admin (correo, nombre, contrasena) VALUES (?, ?, ?)',
-            ['administrador1234@gmail.com', 'Administrador', password_hash('admin123', PASSWORD_DEFAULT)]
+            ['administrador1234@gmail.com', 'Administrador', password_hash('123admin', PASSWORD_DEFAULT)]
         );
     }
 }

@@ -78,8 +78,7 @@ function compactar_bloque_eliminado(array $bloque): bool
     $idBloque = (int) $bloque['id_bloque'];
     $idCalendario = (int) $bloque['id_calendario'];
     $hayClasesReales = db_count('SELECT COUNT(*) AS total FROM horario_semanal WHERE id_bloque = ?', [$idBloque]) > 0
-        || db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque = ?', [$idBloque]) > 0
-        || db_count('SELECT COUNT(*) AS total FROM huecos_horario_temporales WHERE id_bloque = ?', [$idBloque]) > 0;
+        || db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque = ?', [$idBloque]) > 0;
     if ($hayClasesReales) {
         return false;
     }
@@ -266,8 +265,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $used = db_count('SELECT COUNT(*) AS total FROM horario_semanal WHERE id_bloque = ?', [$id])
                 + db_count('SELECT COUNT(*) AS total FROM disponibilidad_profesores WHERE id_bloque = ?', [$id])
-                + db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque = ?', [$id])
-                + db_count('SELECT COUNT(*) AS total FROM huecos_horario_temporales WHERE id_bloque = ?', [$id]);
+                + db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque = ?', [$id]);
             if ($used > 0) {
                 $compactado = false;
                 try {
@@ -281,15 +279,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash_set('success', 'Se condensó la clase en el bloque siguiente y se eliminó el bloque actual.');
                 } else {
                     $hayClasesEnBloque = db_count('SELECT COUNT(*) AS total FROM horario_semanal WHERE id_bloque = ?', [$id]) > 0
-                        || db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque = ?', [$id]) > 0
-                        || db_count('SELECT COUNT(*) AS total FROM huecos_horario_temporales WHERE id_bloque = ?', [$id]) > 0;
+                        || db_count('SELECT COUNT(*) AS total FROM novedades_cambios_horario WHERE id_bloque = ?', [$id]) > 0;
                     if ($hayClasesEnBloque) {
                         throw new RuntimeException('No se puede borrar este bloque porque contiene clases o novedades que no se pueden compactar.');
                     }
                     db_exec('DELETE FROM horario_semanal WHERE id_bloque = ?', [$id]);
                     db_exec('DELETE FROM disponibilidad_profesores WHERE id_bloque = ?', [$id]);
                     db_exec('DELETE FROM novedades_cambios_horario WHERE id_bloque = ?', [$id]);
-                    db_exec('DELETE FROM huecos_horario_temporales WHERE id_bloque = ?', [$id]);
                     db_exec('DELETE FROM bloques_horarios WHERE id_bloque = ?', [$id]);
                     eliminar_calendario_si_esta_vacio((int) $bloque['id_calendario']);
                     eliminar_calendario_personalizado_si_es_redundante((string) db_one('SELECT id_grado FROM grados WHERE id_calendario = ? AND activo = 1 LIMIT 1', [(int) $bloque['id_calendario']])['id_grado'], (int) $bloque['id_calendario']);

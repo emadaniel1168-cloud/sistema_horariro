@@ -9,7 +9,6 @@ require_admin_auth();
 $sectionTitle = 'Profesores';
 asegurar_esquema_novedades();
 asegurar_tabla_materia_profesores();
-asegurar_tabla_salon_profesores();
 
 function profesor_fecha_proxima_dia(int $dia): string
 {
@@ -133,8 +132,7 @@ if (get('api') === 'clases_reemplazo_profesor') {
         $salonesPorProfesor = [];
         $profesoresPorSalon = [];
         foreach (db_all(
-            'SELECT id_profesor, id_salon FROM salon_profesores
-             UNION SELECT id_profesor, id_salon FROM horario_semanal
+            'SELECT DISTINCT id_profesor, id_salon FROM horario_semanal
              WHERE id_profesor IS NOT NULL AND id_salon IS NOT NULL'
         ) as $asignacionSalon) {
             $idProfesorSalon = (int) $asignacionSalon['id_profesor'];
@@ -355,18 +353,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $salonId = $salon ? (int) $salon : null;
             if ($salonId && !exists_id('salones', 'id_salon', $salonId)) {
                 throw new RuntimeException('El salón seleccionado no existe.');
-            }
-            if ($salonId) {
-                $salonAsignado = db_count(
-                    'SELECT COUNT(*) AS total FROM salon_profesores WHERE id_salon = ? AND id_profesor = ?',
-                    [$salonId, $profesorId]
-                ) + db_count(
-                    'SELECT COUNT(*) AS total FROM horario_semanal WHERE id_salon = ? AND id_profesor = ?',
-                    [$salonId, $profesorId]
-                );
-                if ($salonAsignado === 0) {
-                    throw new RuntimeException('El salón seleccionado no está asignado a este profesor.');
-                }
             }
             if ($estado === 'PROGRAMADA') {
                 validar_disponibilidad_horario($dia, $horaInicio, $horaFin, $profesorId, $salonId);
@@ -889,13 +875,10 @@ if ($profesorHorarioId !== '') {
                      SELECT 1 FROM horario_semanal h
                      JOIN grados g ON g.id_grado = h.id_grado AND g.activo = 1
                      WHERE h.id_salon = s.id_salon AND h.id_profesor = ? AND h.estado = \'PROGRAMADA\'
-                 ) OR EXISTS (
-                     SELECT 1 FROM salon_profesores sp
-                     WHERE sp.id_salon = s.id_salon AND sp.id_profesor = ?
                  )
              )
              ORDER BY s.nombre',
-            [$profesorHorarioId, $profesorHorarioId]
+            [$profesorHorarioId]
         );
         $gradosFiltro = db_all(
             'SELECT DISTINCT g.id_grado

@@ -1983,25 +1983,6 @@ document.addEventListener('DOMContentLoaded', () => {
         form.dataset.partitionConfirmed = 'true';
     });
 
-    document.addEventListener('click', async (event) => {
-        const convertButton = event.target.closest('[data-convert-slot-to-break]');
-        if (!convertButton) return;
-
-        const form = convertButton.closest('form');
-        if (!form) return;
-        event.preventDefault();
-        const confirmed = await showConfirmDialog(
-            'Convertir esta casilla',
-            '¿Quieres convertir solo esta casilla en descanso? Los demás días no cambiarán.',
-            'Convertir'
-        );
-        if (!confirmed) return;
-
-        form.querySelector('[name="action"]').value = 'convert_class_slot_to_break';
-        form.querySelector('[name="confirmar_conversion_descanso"]').value = '1';
-        form.submit();
-    });
-
     document.addEventListener('submit', async (event) => {
         const form = event.target.closest('form');
         if (!form) return;
