@@ -2124,7 +2124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'id_grado' => (string) $anterior['id_grado'],
                     'id_dia' => (int) $anterior['id_dia'],
                     'id_bloque' => (int) $anterior['id_bloque'],
-                    'expira_en' => time() + 180,
+                    'expira_en' => time() + 60,
                 ];
             }
             $restauradoAlOriginal = $novedadesExistentes && !$hayCambios;
