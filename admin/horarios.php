@@ -1933,8 +1933,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 || (string) ($anterior['estado'] ?? '') !== (string) $estado
                 || (string) ($anterior['observacion'] ?? '') !== (string) ($observacion ?? '')
             );
+            $eliminarClaseCanceladaPermanentemente = $guardarPermanente && $estado === 'CANCELADA';
             if ($cambiosBase) {
-                if ($guardarPermanente) {
+                if ($guardarPermanente && !$eliminarClaseCanceladaPermanentemente) {
                     eliminar_horario_original_novedad($id);
                     db_exec(
                         'UPDATE horario_semanal
@@ -1947,7 +1948,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         reprogramar_clases_siguientes((string) $g, (int) $dia, (int) $bloque, (int) $id, post('reprogramar_siguientes', '0') === '1');
                     }
                 }
-                registrar_cambio_horario($id, 'CAMBIO', 'Clase actualizada desde el horario semanal.');
+                if (!$eliminarClaseCanceladaPermanentemente) {
+                    registrar_cambio_horario($id, 'CAMBIO', 'Clase actualizada desde el horario semanal.');
+                }
             }
             $bloqueNuevo = db_one(
                 'SELECT TIME_FORMAT(hora_inicio, \'%H:%i\') AS hora_inicio,
@@ -2000,7 +2003,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $hayCambios = $profesorCambio || $materiaCambio || $salonCambio || $horaCambio || $observacionCambio
                 || $estadoCambio
                 || $estado === 'DESCANSO'
-                || ($guardarPermanente && $resolucionCancelacion !== '');
+                || ($guardarPermanente && $resolucionCancelacion !== '')
+                || $eliminarClaseCanceladaPermanentemente;
             if ($resolucionCancelacion === 'descanso' && $estadoCambio) {
                 $detallesNovedad[] = 'La casilla quedó como descanso.';
             }
@@ -2035,12 +2039,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     );
                     eliminar_horario_original_novedad($id);
                     db_exec('DELETE FROM novedades_temporales WHERE id_horario = ?', [$id]);
-                    db_exec(
-                        'INSERT INTO novedades_temporales (grupo_novedad, id_horario, expira_en, observacion)
-                         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 3 MINUTE), ?)',
-                        [bin2hex(random_bytes(16)), $id, 'Cambios aplicados permanentemente desde el horario semanal: ' . implode('; ', $detallesNovedad)]
-                    );
-                    if ($estadoCambio && $estado === 'CANCELADA') {
+                    if ($eliminarClaseCanceladaPermanentemente) {
+                        registrar_cambio_horario($id, 'ELIMINACION', 'Clase cancelada permanentemente y eliminada del horario semanal.');
+                        if (db_exec('DELETE FROM horario_semanal WHERE id_horario = ?', [$id]) !== 1) {
+                            throw new RuntimeException('No se pudo eliminar la clase cancelada del horario semanal.');
+                        }
+                    } else {
+                        db_exec(
+                            'INSERT INTO novedades_temporales (grupo_novedad, id_horario, expira_en, observacion)
+                             VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 3 MINUTE), ?)',
+                            [bin2hex(random_bytes(16)), $id, 'Cambios aplicados permanentemente desde el horario semanal: ' . implode('; ', $detallesNovedad)]
+                        );
+                    }
+                    if (!$eliminarClaseCanceladaPermanentemente && $estadoCambio && $estado === 'CANCELADA') {
                         registrar_novedad_cancelacion_horario(
                             $id,
                             $grupoNovedad,
@@ -2048,7 +2059,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $fechaNovedad
                         );
                     }
-                    registrar_cambio_horario($id, 'CAMBIO', 'Cambios permanentes guardados desde el horario semanal.');
+                    if (!$eliminarClaseCanceladaPermanentemente) {
+                        registrar_cambio_horario($id, 'CAMBIO', 'Cambios permanentes guardados desde el horario semanal.');
+                    }
                 } elseif ($hayCambios) {
                     db_exec('DELETE FROM novedades_temporales WHERE id_horario = ?', [$id]);
                     $valoresNovedad = [
@@ -2092,7 +2105,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         db_exec("UPDATE novedades_cambios_horario SET estado = 'CANCELADA' WHERE id_cambio = ?", [$duplicada['id_cambio']]);
                     }
                 }
-                if ($guardarPermanente && ($anterior['estado'] ?? '') === 'CANCELADA') {
+                if ($guardarPermanente && !$eliminarClaseCanceladaPermanentemente && ($anterior['estado'] ?? '') === 'CANCELADA') {
                     db_exec(
                         "DELETE FROM novedades_cambios_horario
                          WHERE id_horario = ? AND estado = 'HISTORICO'",
@@ -2106,10 +2119,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 throw $e;
             }
+            if ($eliminarClaseCanceladaPermanentemente) {
+                $_SESSION['horario_celda_cancelada_temporal'] = [
+                    'id_grado' => (string) $anterior['id_grado'],
+                    'id_dia' => (int) $anterior['id_dia'],
+                    'id_bloque' => (int) $anterior['id_bloque'],
+                    'expira_en' => time() + 180,
+                ];
+            }
             $restauradoAlOriginal = $novedadesExistentes && !$hayCambios;
             flash_set('success', $guardarPermanente && $hayCambios
-                ? ($estado === 'CANCELADA'
-                    ? 'La clase quedó cancelada permanentemente. El espacio aparece resaltado durante 3 minutos.'
+                ? ($eliminarClaseCanceladaPermanentemente
+                    ? 'La clase fue eliminada permanentemente del horario semanal.'
                     : 'Cambios guardados permanentemente en el horario semanal. Se resaltarán durante 3 minutos.')
                 : ($hayCambios
                 ? 'Novedad registrada para ' . $fechaNovedad . '. El horario semanal original no fue modificado.'
@@ -2144,6 +2165,16 @@ $novedadesActivas = [];
 $novedadesPorDiaBloque = [];
 $descansosPorDiaBloque = [];
 $ocupacionesPorDia = [];
+$marcasVerdesCancelacion = [];
+$marcaVerdeCancelacion = $_SESSION['horario_celda_cancelada_temporal'] ?? null;
+if (is_array($marcaVerdeCancelacion)) {
+    if ((int) ($marcaVerdeCancelacion['expira_en'] ?? 0) <= time()) {
+        unset($_SESSION['horario_celda_cancelada_temporal']);
+    } elseif ((string) ($marcaVerdeCancelacion['id_grado'] ?? '') === $grado) {
+        $marcasVerdesCancelacion[(int) $marcaVerdeCancelacion['id_bloque'] . ':' . (int) $marcaVerdeCancelacion['id_dia']]
+            = (int) $marcaVerdeCancelacion['expira_en'] * 1000;
+    }
+}
 $gradoInfo = null;
 if ($grado) {
     $gradoInfo = db_one(
@@ -2634,6 +2665,7 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                         <td>
                             <?php
                             $cell = $grid[(int) $bloque['id_bloque']][(int) $dia['id_dia']] ?? null;
+                            $expiraMarcaVerdeCancelacion = $marcasVerdesCancelacion[(int) $bloque['id_bloque'] . ':' . (int) $dia['id_dia']] ?? null;
                             $novedad = $novedadesPorDiaBloque[$dia['id_dia'] . ':' . $bloque['id_bloque']] ?? null;
                             $esAdicionActiva = $novedad
                                 && ($novedad['tipo_cambio'] ?? '') === 'ADICION'
@@ -2662,7 +2694,8 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                                         data-title="Editar clase cancelada"
                                         aria-label="Editar la clase cancelada del <?= e($dia['nombre']) ?>">+</div>
                             <?php elseif ($bloque['tipo'] === 'DESCANSO'): ?>
-                                <button class="cell-break cell-break-action" type="button"
+                                <button class="cell-break cell-break-action <?= $expiraMarcaVerdeCancelacion ? 'is-temporary' : '' ?>" type="button"
+                                    <?= $expiraMarcaVerdeCancelacion ? 'data-expire-at="' . $expiraMarcaVerdeCancelacion . '"' : '' ?>
                                     data-open-modal="tpl-break-addition-<?= (int) $bloque['id_bloque'] ?>-<?= (int) $dia['id_dia'] ?>"
                                     data-title="Agregar clase durante el descanso"
                                     aria-label="Agregar clase durante el descanso del <?= e($dia['nombre']) ?>">Descanso</button>
@@ -2677,13 +2710,14 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                                 $descansoNovedad = !$descansoTemporal
                                     && ($novedad['estado'] ?? '') === 'ACTIVA';
                                 ?>
-                                <button class="cell-break cell-break-action <?= $descansoTemporal ? 'is-temporary' : ($descansoNovedad ? 'is-modified' : '') ?>" type="button"
-                                    <?= $descansoTemporal ? 'data-expire-at="' . (int) $novedad['expira_timestamp'] * 1000 . '"' : '' ?>
+                                <button class="cell-break cell-break-action <?= ($descansoTemporal || $expiraMarcaVerdeCancelacion) ? 'is-temporary' : ($descansoNovedad ? 'is-modified' : '') ?>" type="button"
+                                    <?= $descansoTemporal ? 'data-expire-at="' . (int) $novedad['expira_timestamp'] * 1000 . '"' : ($expiraMarcaVerdeCancelacion ? 'data-expire-at="' . $expiraMarcaVerdeCancelacion . '"' : '') ?>
                                     data-open-modal="<?= e($plantillaDescanso) ?>"
                                     data-title="Editar descanso"
                                     aria-label="Editar descanso del <?= e($dia['nombre']) ?>">Descanso</button>
                             <?php elseif (!empty($descansosPorDiaBloque[(int) $bloque['id_bloque']][(int) $dia['id_dia']]) && !$esAdicionActiva): ?>
-                                <button class="cell-break cell-break-action" type="button"
+                                <button class="cell-break cell-break-action <?= $expiraMarcaVerdeCancelacion ? 'is-temporary' : '' ?>" type="button"
+                                    <?= $expiraMarcaVerdeCancelacion ? 'data-expire-at="' . $expiraMarcaVerdeCancelacion . '"' : '' ?>
                                     data-open-modal="tpl-create-<?= (int) $bloque['id_bloque'] ?>-<?= (int) $dia['id_dia'] ?>"
                                     data-title="Reemplazar descanso"
                                     aria-label="Reemplazar descanso del <?= e($dia['nombre']) ?>">Descanso</button>
@@ -2735,7 +2769,10 @@ function horario_form(array $bloquesClase, array $ocupacionesPorDia, array $mate
                                         <?php if ($esCancelada && $observacionVisible !== ''): ?><small class="schedule-novelty-note"><?= e($observacionVisible) ?></small><?php endif; ?>
                                     </div>
                                 <?php else: ?>
-                                    <div class="cell-empty" data-open-modal="tpl-create-<?= (int) $bloque['id_bloque'] ?>-<?= (int) $dia['id_dia'] ?>" data-title="Nueva clase">+</div>
+                                    <div class="cell-empty <?= $expiraMarcaVerdeCancelacion ? 'is-temporary' : '' ?>"
+                                        <?= $expiraMarcaVerdeCancelacion ? 'data-expire-at="' . $expiraMarcaVerdeCancelacion . '"' : '' ?>
+                                        data-open-modal="tpl-create-<?= (int) $bloque['id_bloque'] ?>-<?= (int) $dia['id_dia'] ?>"
+                                        data-title="Nueva clase">+</div>
                                 <?php endif; ?>
                             <?php endif; ?>
                         </td>
