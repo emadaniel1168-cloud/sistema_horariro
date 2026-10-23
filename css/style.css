@@ -796,6 +796,7 @@ tbody tr:hover { background: var(--bg); }
 .novelty-swatch.is-cancelled { background: #c85a5a; }
 .schedule-novelty-label { margin-top: 5px; color: #005a9e !important; font-weight: 700; }
 .is-cancelled .schedule-novelty-label { color: #a94343 !important; }
+.schedule-novelty-label.is-cancelled { color: #a94343 !important; }
 .schedule-novelty-note { display: -webkit-box !important; margin-top: 4px; overflow: hidden; white-space: pre-line; font-size: 11px; -webkit-box-orient: vertical; -webkit-line-clamp: 5; }
 .cell-empty {
     min-height: 58px;

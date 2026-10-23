@@ -827,6 +827,7 @@ $clasesCanceladasProfesor = [];
 $diasHorario = [];
 $diasHorarioTabla = [];
 $clasesProfesor = [];
+$cancelacionesNovedadProfesorPorHorario = [];
 $bloquesProfesor = [];
 $bloquesProfesorTabla = [];
 $gridProfesor = [];
@@ -959,6 +960,27 @@ if ($profesorHorarioId !== '') {
              ORDER BY b.hora_inicio, d.orden_dia, g.id_grado',
             [$profesorHorarioId]
         );
+        foreach (db_all(
+            "SELECT DISTINCT n.id_horario, n.fecha
+             FROM novedades_cambios_horario n
+             JOIN horario_semanal h ON h.id_horario = n.id_horario
+             JOIN grados g ON g.id_grado = h.id_grado AND g.activo = 1
+             WHERE h.id_profesor = ? AND n.estado = 'ACTIVA' AND n.fecha >= CURDATE()
+               AND (
+                   COALESCE(n.nuevo_estado, 'PROGRAMADA') = 'CANCELADA'
+                   OR h.estado = 'CANCELADA'
+                   OR n.tipo_cambio = 'CANCELACION'
+                   OR n.observacion LIKE '%clase cancelada%'
+               )
+             ORDER BY n.fecha",
+            [$profesorHorarioId]
+        ) as $cancelacionNovedad) {
+            $fechaCancelacion = DateTimeImmutable::createFromFormat('!Y-m-d', (string) $cancelacionNovedad['fecha']);
+            if ($fechaCancelacion) {
+                $cancelacionesNovedadProfesorPorHorario[(int) $cancelacionNovedad['id_horario']][] =
+                    $fechaCancelacion->format('d/m/Y');
+            }
+        }
         $clasesOcultasProfesor = [];
         foreach ($clasesProfesor as $clase) {
             $key = $clase['hora_inicio'] . '|' . $clase['hora_fin'];
@@ -1103,10 +1125,20 @@ require dirname(__DIR__) . '/includes/header.php';
                                     <?php $clasesCelda = $gridProfesor[$key][(int) $dia['id_dia']] ?? []; ?>
                                     <?php if ($clasesCelda): ?>
                                         <?php foreach ($clasesCelda as $clase): ?>
-                                            <div class="cell-class" data-edit="tpl-edit-class-<?= (int) $clase['id_horario'] ?>" data-title="Editar clase" role="button" tabindex="0">
+                                            <?php
+                                            $fechasCanceladas = $cancelacionesNovedadProfesorPorHorario[(int) $clase['id_horario']] ?? [];
+                                            $claseCanceladaPermanentemente = (string) $clase['estado'] === 'CANCELADA';
+                                            ?>
+                                            <div class="cell-class <?= $claseCanceladaPermanentemente ? 'is-cancelled' : '' ?>" data-edit="tpl-edit-class-<?= (int) $clase['id_horario'] ?>" data-title="Editar clase" role="button" tabindex="0">
                                                 <strong><?= e($clase['id_grado']) ?></strong>
                                                 <small><?= e($clase['materia']) ?></small>
                                                 <small><?= e($clase['salon'] ?: 'Sin salón') ?></small>
+                                                <?php if ($claseCanceladaPermanentemente): ?>
+                                                    <small class="schedule-novelty-label is-cancelled">¡Clase cancelada!</small>
+                                                <?php endif; ?>
+                                                <?php foreach ($fechasCanceladas as $fechaCancelada): ?>
+                                                    <small class="schedule-novelty-label is-cancelled">¡No tiene clase el <?= e($fechaCancelada) ?>!</small>
+                                                <?php endforeach; ?>
                                             </div>
                                         <?php endforeach; ?>
                                     <?php elseif (!empty($clasesOcultasProfesor[$key][(int) $dia['id_dia']])): ?>
